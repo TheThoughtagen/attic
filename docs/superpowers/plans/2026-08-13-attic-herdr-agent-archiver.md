@@ -317,6 +317,23 @@ def test_corrupt_state_falls_back_to_empty(tmp_path):
     assert home.load_state() == {}
 
 
+def test_semantically_corrupt_entries_are_skipped_not_raised(tmp_path):
+    """Valid JSON with wrong-typed fields must not raise: attic runs unattended
+    from a LaunchAgent, so an exception here silently kills every future tick."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.state_path.write_text(json.dumps({
+        "term_good": {"first_idle_at": "2026-08-13T00:00:00Z", "last_revision": 3},
+        "term_bad_revision": {"last_revision": "oops"},
+        "term_null_revision": {"last_revision": None},
+        "term_bad_timestamp": {"first_idle_at": 42, "last_revision": 1},
+    }))
+    loaded = home.load_state()
+    assert set(loaded) == {"term_good"}
+    assert loaded["term_good"].last_revision == 3
+    assert loaded["term_good"].first_idle_at == "2026-08-13T00:00:00Z"
+
+
 def test_save_state_is_atomic_leaving_no_tempfile(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -416,11 +433,19 @@ class AtticHome:
             return {}
         out: dict[str, PaneState] = {}
         for key, val in raw.items():
-            if isinstance(val, dict):
-                out[key] = PaneState(
-                    first_idle_at=val.get("first_idle_at"),
-                    last_revision=int(val.get("last_revision", 0)),
-                )
+            # A malformed entry is dropped, not fatal: losing one pane's idle clock
+            # restarts it, which delays archiving. Raising would kill the whole
+            # unattended tick.
+            if not isinstance(val, dict):
+                continue
+            first_idle_at = val.get("first_idle_at")
+            if first_idle_at is not None and not isinstance(first_idle_at, str):
+                continue
+            try:
+                last_revision = int(val.get("last_revision", 0))
+            except (TypeError, ValueError):
+                continue
+            out[key] = PaneState(first_idle_at=first_idle_at, last_revision=last_revision)
         return out
 
     def save_state(self, state: dict[str, PaneState]) -> None:
