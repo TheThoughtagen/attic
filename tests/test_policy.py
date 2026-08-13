@@ -206,3 +206,54 @@ def test_blocked_is_still_never_reapable_after_widening():
     st = {"term_w1:p1": idle_since(1000)}
     actions = decide([mkpane(status="blocked")], st, NOW, CFG)
     assert archived(actions) == []
+
+
+# --- exemptions -------------------------------------------------------------
+
+def pinned_state(pinned=True, **kw):
+    return PaneState(first_idle_at=(NOW - timedelta(hours=10)).isoformat().replace("+00:00", "Z"),
+                     last_revision=1, pinned=pinned, **kw)
+
+
+def test_pinned_pane_is_never_archived():
+    st = {"term_w1:p1": pinned_state()}
+    actions = decide([mkpane()], st, NOW, CFG)
+    assert archived(actions) == []
+    assert skip_reason(actions, "w1:p1") == "pinned"
+
+
+def test_snoozed_pane_is_not_archived_before_the_deadline():
+    st = {"term_w1:p1": pinned_state(pinned=False,
+                                     snooze_until="2026-08-13T18:00:00Z")}   # NOW is 12:00
+    actions = decide([mkpane()], st, NOW, CFG)
+    assert archived(actions) == []
+    assert skip_reason(actions, "w1:p1") == "snoozed until 2026-08-13T18:00:00Z"
+
+
+def test_an_expired_snooze_stops_protecting():
+    st = {"term_w1:p1": pinned_state(pinned=False,
+                                     snooze_until="2026-08-13T06:00:00Z")}   # in the past
+    assert archived(decide([mkpane()], st, NOW, CFG)) == ["w1:p1"]
+
+
+def test_pin_outranks_status_in_the_reported_reason():
+    """The operator's explicit intent is the more useful thing to show."""
+    st = {"term_w1:p1": pinned_state()}
+    actions = decide([mkpane(status="working")], st, NOW, CFG)
+    assert skip_reason(actions, "w1:p1") == "pinned"
+
+
+def test_exemptions_survive_update_state():
+    prior = {"term_w1:p1": PaneState("2026-08-13T02:00:00Z", 5,
+                                     snooze_until="2026-08-14T00:00:00Z", pinned=True)}
+    st = update_state([mkpane(revision=5)], prior, NOW)
+    assert st["term_w1:p1"].pinned is True
+    assert st["term_w1:p1"].snooze_until == "2026-08-14T00:00:00Z"
+
+
+def test_update_state_clears_an_expired_snooze():
+    """So state.json does not accumulate stale deadlines forever."""
+    prior = {"term_w1:p1": PaneState("2026-08-13T02:00:00Z", 5,
+                                     snooze_until="2026-08-13T06:00:00Z")}
+    st = update_state([mkpane(revision=5)], prior, NOW)
+    assert st["term_w1:p1"].snooze_until is None

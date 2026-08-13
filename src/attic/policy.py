@@ -59,13 +59,21 @@ def update_state(
     updated: dict[str, PaneState] = {}
     for pane in panes:
         prior = state.get(pane.terminal_id)
+        pinned = prior.pinned if prior else False
+        snooze_until = prior.snooze_until if prior else None
+        # Drop a deadline that has passed so state.json does not accrue stale ones.
+        if snooze_until and _parse(snooze_until) <= now:
+            snooze_until = None
+
         if pane.agent_status not in REAPABLE_STATUSES:
-            updated[pane.terminal_id] = PaneState(None, pane.revision)
+            updated[pane.terminal_id] = PaneState(None, pane.revision, snooze_until, pinned)
             continue
         if prior is None or prior.last_revision != pane.revision or prior.first_idle_at is None:
-            updated[pane.terminal_id] = PaneState(iso(now), pane.revision)
+            updated[pane.terminal_id] = PaneState(iso(now), pane.revision, snooze_until, pinned)
         else:
-            updated[pane.terminal_id] = PaneState(prior.first_idle_at, pane.revision)
+            updated[pane.terminal_id] = PaneState(
+                prior.first_idle_at, pane.revision, snooze_until, pinned
+            )
     return updated
 
 
@@ -73,13 +81,21 @@ def _verdict(pane: Pane, state: dict[str, PaneState], now, config) -> Skip | dat
     """Return a Skip, or the datetime the pane went idle if it qualifies."""
     if not pane.is_agent:
         return Skip(pane, "not an agent pane")
+    entry = state.get(pane.terminal_id)
+    if entry is not None:
+        # Operator intent outranks every automatic reason, so it is reported first.
+        if entry.pinned:
+            return Skip(pane, "pinned")
+        if entry.snooze_until:
+            until = _parse(entry.snooze_until)
+            if now < until:
+                return Skip(pane, f"snoozed until {entry.snooze_until}")
     if pane.agent_status not in REAPABLE_STATUSES:
         return Skip(pane, f"status is {pane.agent_status}")
     if not pane.session_uuid:
         return Skip(pane, "no session uuid")
     if pane.focused:
         return Skip(pane, "focused")
-    entry = state.get(pane.terminal_id)
     if entry is None or entry.first_idle_at is None:
         return Skip(pane, "idle clock not started")
     since = _parse(entry.first_idle_at)
