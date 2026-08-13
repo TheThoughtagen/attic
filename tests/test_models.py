@@ -15,7 +15,7 @@ def test_parses_every_pane_from_real_herdr_output():
     assert len(panes) == 10
 
 
-def test_agent_pane_carries_session_uuid():
+def test_agent_pane_carries_session_uuid_and_status():
     panes = {p.pane_id: p for p in parse_pane_list(load_fixture())}
     p = panes["w4:p2"]
     assert p.agent == "claude"
@@ -38,6 +38,15 @@ def test_scroll_rows_is_buffer_plus_viewport():
     panes = {p.pane_id: p for p in parse_pane_list(load_fixture())}
     p = panes["w3:p1"]          # max_offset_from_bottom 6314, viewport_rows 91
     assert p.scroll_rows == 6405
+
+
+def test_title_uses_stripped_field_verbatim_including_unstripped_spinners():
+    """herdr strips the idle marker (✳) from terminal_title_stripped but leaves the
+    working spinner (◐). We take that field verbatim rather than second-guessing it:
+    only `working` panes carry a spinner, and attic archives only `idle` panes."""
+    panes = {p.pane_id: p for p in parse_pane_list(load_fixture())}
+    assert panes["w3:p1"].title == "Add grouping key to module archetype"
+    assert panes["w4:p2"].title == "◐ Debug batch transaction group logging in production"
 
 
 def test_pane_is_frozen():
