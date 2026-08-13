@@ -1277,6 +1277,7 @@ def test_archive_writes_scrollback_and_manifest(tmp_path):
     assert m["idle_since"] == "2026-08-13T10:47:00Z"
     assert m["scrollback_lines"] == 2
     assert m["resume"] == "cd /tmp/repo && claude --resume u-1"
+    assert m["resume_argv"] == ["claude", "--resume", "u-1"]
 
 
 def test_archive_sizes_read_from_pane_scroll_rows(tmp_path):
@@ -1454,7 +1455,13 @@ class Archiver:
             "idle_since": iso(action.idle_since),
             "archived_at": iso(now),
             "scrollback_lines": len(scrollback.splitlines()),
+            # Two forms on purpose. `resume` is for humans to read and paste from
+            # `attic show`. `resume_argv` is what `attic restore` executes verbatim:
+            # recording the exact tokens at archive time is what keeps an old archive
+            # self-describing if the agent CLI's flags change later. Reconstructing
+            # at restore time would silently apply TODAY's flags to an OLD session.
             "resume": f"cd {pane.cwd} && claude --resume {pane.session_uuid}",
+            "resume_argv": ["claude", "--resume", pane.session_uuid],
         }
 
         created = False
@@ -2465,7 +2472,27 @@ def manifest(cwd: str) -> dict:
         "id": "20260812T000000Z-debug", "title": "Debug the thing",
         "cwd": cwd, "session_uuid": "u-1", "workspace": "wh dev",
         "resume": "cd X && claude --resume u-1",
+        "resume_argv": ["claude", "--resume", "u-1"],
     }
+
+
+def test_restore_runs_the_argv_recorded_at_archive_time(tmp_path):
+    """Not one rebuilt from today's code: if the agent CLI's flags change, an old
+    archive must still replay what actually worked when it was written."""
+    m = manifest(str(tmp_path))
+    m["resume_argv"] = ["claude", "--continue-session", "u-1"]   # a future flag
+    client = FakeHerdrClient()
+    restore(AtticHome(tmp_path), client, m, NOW)
+    assert client.ran == [("w9:p9", ["claude", "--continue-session", "u-1"])]
+
+
+def test_restore_falls_back_when_resume_argv_is_absent(tmp_path):
+    """Manifests written before resume_argv existed still restore."""
+    m = manifest(str(tmp_path))
+    del m["resume_argv"]
+    client = FakeHerdrClient()
+    restore(AtticHome(tmp_path), client, m, NOW)
+    assert client.ran == [("w9:p9", ["claude", "--resume", "u-1"])]
 
 
 def test_restore_creates_a_tab_and_runs_the_stored_resume(tmp_path):
@@ -2540,7 +2567,15 @@ def restore(home: AtticHome, client, manifest: dict, now: datetime) -> str:
         raise FileNotFoundError(f"cwd no longer exists: {cwd}")
 
     pane_id = client.tab_create(cwd, manifest.get("title", manifest["id"]))
-    client.pane_run(pane_id, ["claude", "--resume", manifest["session_uuid"]])
+
+    # Execute the argv recorded at archive time, not one rebuilt from today's code.
+    # The tab is already opened in `cwd`, so the manifest's display string keeps its
+    # redundant "cd ... &&" prefix for humans while this stays a clean token list.
+    argv = manifest.get("resume_argv")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        # Manifest predates resume_argv, or the field is corrupt.
+        argv = ["claude", "--resume", manifest["session_uuid"]]
+    client.pane_run(pane_id, argv)
 
     Archiver(home, client).append_index({
         "id": manifest["id"],
