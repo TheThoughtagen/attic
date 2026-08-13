@@ -1593,6 +1593,44 @@ def test_prune_archives_spares_recent_dirs_without_manifest(tmp_path):
     assert (home.archive_dir / "20260101T000000Z-broken").exists()
 
 
+def test_malformed_manifests_never_raise_and_fall_back_to_mtime(tmp_path):
+    """A manifest we cannot trust is treated as no manifest: mtime-gated, never fatal.
+    prune_archives is the only irreversible operation here and it runs unattended —
+    an exception mid-loop aborts every remaining directory in that run."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    payloads = {
+        "a-list": "[]",
+        "b-string": '"x"',
+        "c-number": "42",
+        "d-nonstring-stamp": '{"archived_at": 12345}',
+        "e-unparseable-stamp": '{"archived_at": "not a date"}',
+        "f-naive-stamp": '{"archived_at": "2026-01-01T00:00:00"}',
+        "g-missing-key": "{}",
+        "h-not-json": "{not json",
+    }
+    for name, payload in payloads.items():
+        d = home.archive_dir / f"20260101T000000Z-{name}"
+        d.mkdir()
+        (d / "manifest.json").write_text(payload, encoding="utf-8")
+        stamp = (NOW - timedelta(days=200)).timestamp()
+        os.utime(d, (stamp, stamp))
+    removed = prune_archives(home, NOW, retention_days=30)
+    assert len(removed) == len(payloads)
+    assert list(home.archive_dir.iterdir()) == []
+
+
+def test_malformed_manifest_within_retention_is_spared(tmp_path):
+    """An untrustworthy manifest must not shorten a directory's life."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    d = home.archive_dir / "20260812T000000Z-bad"
+    d.mkdir()
+    (d / "manifest.json").write_text("[]", encoding="utf-8")
+    assert prune_archives(home, NOW, retention_days=30) == []
+    assert d.exists()
+
+
 def test_prune_reclaims_manifest_less_dirs_past_retention(tmp_path):
     """Orphaned partial archives are invisible to `attic list`, so without this they
     would be immortal — accumulating forever in a tool built to reclaim resources."""
@@ -1678,32 +1716,54 @@ def prune_inventory(home: AtticHome, now: datetime, retention_days: int) -> list
     return removed
 
 
+def _archived_at(path: Path) -> datetime | None:
+    """The manifest's `archived_at`, or None if the manifest is missing, unreadable,
+    or malformed in any way.
+
+    A manifest we cannot trust is treated as no manifest at all. Every rejection
+    below is a real crash this would otherwise cause inside the project's only
+    irreversible operation, running unattended:
+      - non-dict JSON -> data["archived_at"] raises TypeError
+      - non-str stamp -> .replace() raises AttributeError
+      - naive stamp   -> comparing naive to aware raises TypeError at the caller
+    """
+    try:
+        data = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stamp = data.get("archived_at")
+    if not isinstance(stamp, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def prune_archives(home: AtticHome, now: datetime, retention_days: int) -> list[Path]:
     cutoff = now - timedelta(days=retention_days)
     removed: list[Path] = []
     if not home.archive_dir.exists():
         return removed
     for path in sorted(p for p in home.archive_dir.iterdir() if p.is_dir()):
-        manifest = path / "manifest.json"
-        try:
-            data = json.loads(manifest.read_text())
-            archived_at = datetime.fromisoformat(data["archived_at"].replace("Z", "+00:00"))
-        except (OSError, ValueError, KeyError):
-            # No readable manifest: such a directory is invisible to `attic list`
-            # and would otherwise be immortal. Reclaim it, but only once its mtime
-            # is past retention — nothing legitimate is manifest-less and 30 days
-            # old, and the age bar guarantees an in-flight write is never touched.
+        stamp = _archived_at(path)
+        if stamp is None:
+            # No usable manifest: an orphaned partial archive, invisible to
+            # `attic list` and otherwise immortal. Reclaim it, but only once its
+            # mtime is past retention — nothing legitimate is manifest-less and
+            # 30 days old, and the age bar guarantees an in-flight write is never
+            # touched.
             try:
-                mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
             except OSError:
                 continue
-            if mtime < cutoff:
-                shutil.rmtree(path, ignore_errors=True)
+        if stamp < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+            if not path.exists():       # report only what actually went away
                 removed.append(path)
-            continue
-        if archived_at < cutoff:
-            shutil.rmtree(path)
-            removed.append(path)
     return removed
 ```
 
