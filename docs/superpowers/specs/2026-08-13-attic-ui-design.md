@@ -165,6 +165,22 @@ Three decisions, stated explicitly because each has an obvious alternative:
 - **Snooze is an absolute deadline, not a clock reset.** `snooze 24h` means *not
   reapable before then*, regardless of accrued idle time. "Extend the clock"
   would be ambiguous about what happens at expiry.
+- **Re-snoozing replaces, it does not stack.** `:snooze 4h` on an already-snoozed
+  pane means "not for another 4 hours from now". Stacking would let repeated
+  snoozes compound invisibly into protection lasting days — the same silent
+  accumulation this tool exists to prevent. Because replacing can therefore
+  *shorten* an existing snooze, the command always reports the change:
+  `snoozed until 15:47 (was 22:47)`. That does not violate "protection can only
+  add safety", which forbids reducing protection *silently*; an explicitly typed
+  command that names both deadlines is not silent. `:unsnooze` removes it outright.
+- **Snoozing a pinned pane records but has no effect.** The fields are
+  independent and pin is stronger, so the command says so rather than implying
+  protection changed: `note: pane is pinned; snooze applies only after :unpin`.
+- **Neither survives a restore.** A restored session lands in a new pane with a
+  new `terminal_id` and therefore a fresh state entry. The protection covered
+  that session in that slot, not the conversation in perpetuity — worth stating
+  because someone who snoozes, is archived later anyway, and restores will expect
+  it back.
 - **Protection does not stop the idle clock.** A pinned pane keeps accruing idle
   time, so unpinning makes it immediately eligible if past threshold. This is the
   same rule already settled for `PAUSE`: guards gate *execution*, never
