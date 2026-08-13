@@ -286,3 +286,27 @@ procedure that earns this tool authority to close live sessions — uses bare `a
 Confirmed `command -v attic` exits 1. The safety procedure failed at step 1. Fixed via
 `uv tool install --editable "$REPO"`.
 
+
+## Plan 2 — exemptions (2026-08-13)
+
+Ruling S1: T5 and T6 both edit cli.py. Both dispatches state explicitly that
+additions are APPENDED to the existing parser and dispatch chain and that main()
+is never rewritten. cli.py currently has 5 subcommands and ~35 tests covering
+them; a broken existing test means something was clobbered.
+Cost if wrong: silently dropped subcommands, caught by the existing suite.
+
+Ruling S2: T6 relocates `append_inventory` from before `decide()` to after it.
+The pause and protocol-mismatch tests assert inventory is still written on those
+paths — that ordering is easy to break and the failure is silent (the tool keeps
+reporting success while recording nothing). The plan includes an explicit
+regression test; T6's dispatch names it as the thing to not lose.
+Cost if wrong: the Activity view in plan 2 has no data, discovered much later.
+
+Ruling E1: overruled the defer. Task 5 was adding callers to _mutate at that
+moment, which is exactly when a latent footgun stops being latent. Fixed with a
+field-name guard that RAISES rather than degrading gracefully — deliberate break
+from this codebase's drop-the-entry pattern, because a typo'd field is a
+programming error in our own code, not malformed data from disk, and should fail
+loudly in development rather than silently in production.
+Cost if wrong: a bad call site crashes a CLI command instead of silently no-oping.
+
