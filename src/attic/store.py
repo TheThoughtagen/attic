@@ -66,11 +66,19 @@ class AtticHome:
             return {}
         out: dict[str, PaneState] = {}
         for key, val in raw.items():
-            if isinstance(val, dict):
-                out[key] = PaneState(
-                    first_idle_at=val.get("first_idle_at"),
-                    last_revision=int(val.get("last_revision", 0)),
-                )
+            # A malformed entry is dropped, not fatal: losing one pane's idle clock
+            # restarts it, which delays archiving. Raising would kill the whole
+            # unattended tick.
+            if not isinstance(val, dict):
+                continue
+            first_idle_at = val.get("first_idle_at")
+            if first_idle_at is not None and not isinstance(first_idle_at, str):
+                continue
+            try:
+                last_revision = int(val.get("last_revision", 0))
+            except (TypeError, ValueError):
+                continue
+            out[key] = PaneState(first_idle_at=first_idle_at, last_revision=last_revision)
         return out
 
     def save_state(self, state: dict[str, PaneState]) -> None:

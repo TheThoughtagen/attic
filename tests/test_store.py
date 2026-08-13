@@ -75,3 +75,20 @@ def test_pause_file_detection(tmp_path):
 def test_default_home_honors_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ATTIC_HOME", str(tmp_path / "custom"))
     assert AtticHome.default().root == tmp_path / "custom"
+
+
+def test_semantically_corrupt_entries_are_skipped_not_raised(tmp_path):
+    """Valid JSON with wrong-typed fields must not raise: attic runs unattended
+    from a LaunchAgent, so an exception here silently kills every future tick."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.state_path.write_text(json.dumps({
+        "term_good": {"first_idle_at": "2026-08-13T00:00:00Z", "last_revision": 3},
+        "term_bad_revision": {"last_revision": "oops"},
+        "term_null_revision": {"last_revision": None},
+        "term_bad_timestamp": {"first_idle_at": 42, "last_revision": 1},
+    }))
+    loaded = home.load_state()
+    assert set(loaded) == {"term_good"}
+    assert loaded["term_good"].last_revision == 3
+    assert loaded["term_good"].first_idle_at == "2026-08-13T00:00:00Z"
