@@ -17,6 +17,7 @@ class FakeHerdrClient:
         self.fail_read: set[str] = set()
         self.fail_close: set[str] = set()
         self.empty_read: set[str] = set()
+        self.fail_run: bool = False
         # Observations:
         self.closed: list[str] = []
         self.reads: list[tuple[str, int]] = []
@@ -54,4 +55,6 @@ class FakeHerdrClient:
         return self.next_pane_id
 
     def pane_run(self, pane_id: str, command: list[str]) -> None:
+        if self.fail_run:
+            raise HerdrError(f"simulated run failure for {pane_id}")
         self.ran.append((pane_id, command))

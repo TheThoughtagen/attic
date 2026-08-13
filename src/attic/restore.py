@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .archive import Archiver
+from .herdr import HerdrError
 from .policy import iso
 from .store import AtticHome
 
@@ -28,7 +29,14 @@ def restore(home: AtticHome, client, manifest: dict, now: datetime) -> str:
     if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
         # Manifest predates resume_argv, or the field is corrupt.
         argv = ["claude", "--resume", manifest["session_uuid"]]
-    client.pane_run(pane_id, argv)
+    try:
+        client.pane_run(pane_id, argv)
+    except HerdrError as exc:
+        # The tab exists but nothing is running in it. Name the pane, or the user is
+        # left with a stray tab they cannot account for and no idea a restore failed.
+        raise HerdrError(
+            f"opened tab {pane_id} but could not start the session: {exc}"
+        ) from exc
 
     Archiver(home, client).append_index({
         "id": manifest["id"],

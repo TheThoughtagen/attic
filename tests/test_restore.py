@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from attic.cli import main
+from attic.herdr import HerdrError
 from attic.restore import restore
 from attic.store import AtticHome
 from fakes import FakeHerdrClient
@@ -67,6 +69,37 @@ def test_restore_is_non_destructive_and_logs_restored_at(tmp_path):
     entry = json.loads(home.index_path.read_text().strip())
     assert entry["restored_at"] == "2026-08-13T15:47:00Z"
     assert entry["id"] == "20260812T000000Z-debug"
+
+
+def test_restore_names_the_pane_when_the_session_fails_to_start(tmp_path):
+    """A tab exists but nothing runs in it. The error must name the pane, or the user
+    is left with a stray tab they cannot account for and no sign a restore failed."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    client = FakeHerdrClient()
+    client.fail_run = True
+    with pytest.raises(HerdrError, match="w9:p9"):
+        restore(home, client, manifest(str(tmp_path)), NOW)
+    assert client.created_tabs                 # the tab really does exist
+    assert not home.index_path.exists()        # but nothing claims it was restored
+
+
+def test_restore_prints_the_manifest_when_cwd_is_gone(monkeypatch, capsys, tmp_path):
+    """Aborting is right, but the user needs to see WHAT was abandoned — especially
+    the resume string, which lets them recover by hand if the directory merely moved."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    data = {"id": "20260812T000000Z-x", "title": "T", "cwd": "/nonexistent/path",
+            "session_uuid": "u-1", "archived_at": "2026-08-12T00:00:00Z",
+            "resume": "cd /nonexistent/path && claude --resume u-1"}
+    d = home.archive_dir / data["id"]
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv("ATTIC_HOME", str(tmp_path))
+    assert main(["restore", "20260812T000000Z-x"]) == 0
+    err = capsys.readouterr().err
+    assert "cwd no longer exists" in err
+    assert "u-1" in err            # the manifest itself was shown, not just the message
 
 
 def test_restore_twice_yields_two_panes(tmp_path):

@@ -195,9 +195,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "restore":
             try:
                 manifest = resolve_id(home, args.archive_id)
-                pane_id = restore_archive(home, HerdrClient(), manifest, now)
-            except (LookupError, FileNotFoundError) as exc:
+            except LookupError as exc:
                 # Interactive command: a clear message, not a traceback.
+                print(str(exc), file=sys.stderr)
+                return 0
+            try:
+                pane_id = restore_archive(home, HerdrClient(), manifest, now)
+            except FileNotFoundError as exc:
+                # Show WHAT is being abandoned. The resume string in particular lets
+                # the user recover by hand if the directory merely moved.
+                print(str(exc), file=sys.stderr)
+                print(json.dumps(manifest, indent=2), file=sys.stderr)
+                return 0
+            except HerdrError as exc:
                 print(str(exc), file=sys.stderr)
                 return 0
             print(f"restored {manifest['id']} into {pane_id}")
