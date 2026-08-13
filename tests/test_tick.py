@@ -11,6 +11,17 @@ from test_policy import mkpane
 NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
 
 
+def make_resumable(root, panes):
+    """The resumability gate requires a Claude transcript on disk. These tests
+    use fake panes, so create one per pane under an isolated projects root."""
+    from attic.resumable import session_path
+    for pane in panes:
+        path = session_path(pane.cwd, pane.session_uuid, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"type":"user"}\n', encoding="utf-8")
+    return root
+
+
 def home_with_clock(tmp_path, panes, hours_idle=10):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -27,7 +38,8 @@ def test_tick_archives_then_closes_in_that_order(tmp_path):
     pane = mkpane("w4:p2")
     home = home_with_clock(tmp_path, [pane])
     client = FakeHerdrClient(panes=[pane], labels={"w1": "wh dev"})
-    result = run_tick(home, client, NOW)
+    root = make_resumable(tmp_path / "projects", [pane])
+    result = run_tick(home, client, NOW, projects_root=root)
     assert result.reaped is True
     assert client.closed == ["w4:p2"]
     archive_dir = next(home.archive_dir.glob("2026*"))
@@ -130,7 +142,7 @@ def test_close_failure_keeps_archive_and_marks_it(tmp_path):
     home = home_with_clock(tmp_path, [pane])
     client = FakeHerdrClient(panes=[pane])
     client.fail_close.add("w4:p2")
-    run_tick(home, client, NOW)
+    run_tick(home, client, NOW, projects_root=make_resumable(tmp_path / "projects", [pane]))
     entry = json.loads(home.index_path.read_text().strip())
     assert entry["close_failed"] is True
     assert next(home.archive_dir.glob("2026*")).exists()
@@ -142,7 +154,8 @@ def test_dry_run_output_states_why_reaping_is_disabled(capsys, tmp_path):
     pane = mkpane("w4:p2")
     home = home_with_clock(tmp_path, [pane])
     home.pause_path.touch()
-    result = run_tick(home, FakeHerdrClient(panes=[pane]), NOW, dry_run=True)
+    result = run_tick(home, FakeHerdrClient(panes=[pane]), NOW, dry_run=True,
+                      projects_root=make_resumable(tmp_path / "projects", [pane]))
     _print_verdicts(result)
     out = capsys.readouterr().out
     assert "reaping disabled: paused" in out
@@ -186,7 +199,7 @@ def test_index_append_failure_after_close_does_not_propagate(tmp_path):
     home = home_with_clock(tmp_path, [pane])
     client = FakeHerdrClient(panes=[pane])
     with mock.patch.object(Archiver, "append_index", side_effect=OSError(28, "No space")):
-        result = run_tick(home, client, NOW)
+        result = run_tick(home, client, NOW, projects_root=make_resumable(tmp_path / "projects", [pane]))
     assert result.reaped is True
     assert client.closed == ["w4:p2"]
     assert next(home.archive_dir.glob("2026*")).exists()
@@ -211,3 +224,20 @@ def test_state_is_persisted_across_ticks(tmp_path):
     home.ensure()
     run_tick(home, FakeHerdrClient(panes=[pane]), NOW)
     assert home.load_state()[pane.terminal_id].first_idle_at == "2026-08-13T15:47:00Z"
+
+
+def test_tick_refuses_to_close_a_pane_whose_session_is_not_yet_resumable(tmp_path):
+    """The bug staging found: attic closed a real pane and then `claude --resume`
+    answered "No conversation found". herdr's UUID is genuine, but Claude Code
+    writes the transcript lazily, so a young session cannot be brought back.
+    Closing it produces an archive that restores into an empty prompt."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    client = FakeHerdrClient(panes=[pane])
+    empty_root = tmp_path / "projects"          # no transcript on disk
+    empty_root.mkdir()
+    result = run_tick(home, client, NOW, projects_root=empty_root)
+    assert client.closed == []                                  # pane survives
+    assert list(home.archive_dir.glob("2026*")) == []            # nothing archived
+    reason = next(a.reason for a in result.actions if a.pane.pane_id == "w4:p2")
+    assert "claude --resume would fail" in reason

@@ -9,12 +9,14 @@ import sys
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .archive import Archiver
 from .catalog import format_list, load_manifests, resolve_id
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
-from .policy import Action, Archive, decide, iso, update_state
+from .policy import Action, Archive, Skip, decide, iso, update_state
+from .resumable import resume_blocker
 from .restore import restore as restore_archive
 from .store import AtticHome
 
@@ -38,7 +40,35 @@ def _setup_logging(home: AtticHome) -> None:
     )
 
 
-def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> TickResult:
+def _gate_on_resumability(
+    actions: list[Action], projects_root: Path | None = None
+) -> list[Action]:
+    """Downgrade Archive verdicts whose session cannot be proven recoverable.
+
+    Applied to the verdicts rather than inside the archive loop so that
+    `attic reap --dry-run` shows what will actually happen. The soak has the
+    operator reading that output for days before granting reaping authority;
+    a dry-run promising an archive the tick would refuse is worse than no
+    dry-run at all.
+    """
+    gated: list[Action] = []
+    for action in actions:
+        if isinstance(action, Archive):
+            blocker = resume_blocker(action.pane, projects_root)
+            if blocker is not None:
+                gated.append(Skip(action.pane, blocker))
+                continue
+        gated.append(action)
+    return gated
+
+
+def run_tick(
+    home: AtticHome,
+    client,
+    now: datetime,
+    dry_run: bool = False,
+    projects_root: Path | None = None,
+) -> TickResult:
     """Snapshot always; reap only when every guard passes. Never raises."""
     home.ensure()
     config = home.load_config()
@@ -80,7 +110,7 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
                 )
                 blocked = f"protocol mismatch: {protocol} != {config.herdr_protocol}"
 
-    actions = decide(panes, state, now, config)
+    actions = _gate_on_resumability(decide(panes, state, now, config), projects_root)
 
     if dry_run:
         return TickResult(actions=actions, reason=blocked or "dry-run")
