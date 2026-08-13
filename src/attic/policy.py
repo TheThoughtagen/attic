@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 from .models import Pane
 from .store import Config, PaneState
 
-REAPABLE_STATUS = "idle"
+# Both mean "an agent sitting at a prompt with a live process, not working and
+# not waiting on the human". `done` is not a detection state at all — herdr's
+# claude manifest defines only working/blocked/idle/unknown — it is a completion
+# badge layered on top, and `herdr agent explain` reports such a pane as `idle`.
+# Verified: a `done` pane held a live 9h58m claude process, and observed panes
+# decaying done -> idle on their own. Excluding it would ignore ~4 of 9 real
+# sessions for no semantic reason.
+REAPABLE_STATUSES = frozenset({"idle", "done"})
 
 
 @dataclass(frozen=True)
@@ -52,7 +59,7 @@ def update_state(
     updated: dict[str, PaneState] = {}
     for pane in panes:
         prior = state.get(pane.terminal_id)
-        if pane.agent_status != REAPABLE_STATUS:
+        if pane.agent_status not in REAPABLE_STATUSES:
             updated[pane.terminal_id] = PaneState(None, pane.revision)
             continue
         if prior is None or prior.last_revision != pane.revision or prior.first_idle_at is None:
@@ -66,7 +73,7 @@ def _verdict(pane: Pane, state: dict[str, PaneState], now, config) -> Skip | dat
     """Return a Skip, or the datetime the pane went idle if it qualifies."""
     if not pane.is_agent:
         return Skip(pane, "not an agent pane")
-    if pane.agent_status != REAPABLE_STATUS:
+    if pane.agent_status not in REAPABLE_STATUSES:
         return Skip(pane, f"status is {pane.agent_status}")
     if not pane.session_uuid:
         return Skip(pane, "no session uuid")

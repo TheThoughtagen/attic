@@ -181,3 +181,28 @@ def test_every_pane_receives_a_verdict():
     actions = decide(panes, {}, NOW, CFG)
     assert len(actions) == 3
     assert {a.pane.pane_id for a in actions} == {"w1:p1", "w1:p2", "w1:p3"}
+
+
+def test_done_is_reapable_like_idle():
+    """`done` is not a detection state — herdr's claude manifest defines only
+    working/blocked/idle/unknown. It is a completion badge layered on top, and
+    `herdr agent explain` reports such a pane as `idle` with a live process.
+    Excluding it would ignore roughly half of a real machine's sessions."""
+    st = {"term_w1:p1": idle_since(5)}
+    assert archived(decide([mkpane(status="done")], st, NOW, CFG)) == ["w1:p1"]
+
+
+def test_flipping_between_done_and_idle_does_not_reset_the_clock():
+    """The badge is about the operator's attention, not the agent's activity, so
+    a pane oscillating done<->idle must keep accruing idle time."""
+    prior = {"term_w1:p1": idle_since(10, revision=5)}
+    st = update_state([mkpane(status="done", revision=5)], prior, NOW)
+    assert st["term_w1:p1"].first_idle_at == "2026-08-13T02:00:00Z"
+
+
+def test_blocked_is_still_never_reapable_after_widening():
+    """Widening to `done` must not accidentally admit `blocked`, which means the
+    agent is parked on a permission prompt awaiting a human decision."""
+    st = {"term_w1:p1": idle_since(1000)}
+    actions = decide([mkpane(status="blocked")], st, NOW, CFG)
+    assert archived(actions) == []
