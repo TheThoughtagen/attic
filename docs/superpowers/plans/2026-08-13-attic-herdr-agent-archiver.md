@@ -2263,6 +2263,33 @@ def test_resolve_rejects_unknown_id(tmp_path):
         resolve_id(home, "nope")
 
 
+def test_list_survives_a_manifest_with_a_null_timestamp(tmp_path):
+    """One null archived_at makes sorted() raise TypeError, which main() swallows —
+    so `attic list` would print nothing and exit 0, hiding EVERY archive rather than
+    the one corrupt entry. This is the recovery path; it must degrade per-record."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    make_archive(home, "20260812T000000Z-good", "Real session", "2026-08-12T00:00:00Z")
+    bad = home.archive_dir / "20260101T000000Z-bad"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text(
+        json.dumps({"id": "20260101T000000Z-bad", "title": "Bad", "archived_at": None}),
+        encoding="utf-8",
+    )
+    titles = [m["title"] for m in load_manifests(home)]
+    assert "Real session" in titles
+
+
+def test_exact_id_wins_over_a_longer_prefix_match(tmp_path):
+    """Two panes archived in the same second produce IDs where one is a prefix of the
+    other. Supplying a complete ID must never be reported as ambiguous."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    make_archive(home, "20260812T000000Z-a", "A", "2026-08-12T00:00:00Z")
+    make_archive(home, "20260812T000000Z-ab", "AB", "2026-08-12T00:00:01Z")
+    assert resolve_id(home, "20260812T000000Z-a")["title"] == "A"
+
+
 def test_format_list_includes_id_and_title(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -2308,11 +2335,28 @@ def load_manifests(home: AtticHome) -> list[dict]:
             continue
         data.setdefault("id", path.name)
         out.append(data)
-    return sorted(out, key=lambda m: m.get("archived_at", ""), reverse=True)
+    return sorted(out, key=_sort_key, reverse=True)
+
+
+def _sort_key(manifest: dict) -> str:
+    """Sort by archived_at, tolerating entries where it is absent or not a string.
+
+    A bare .get(default) is NOT enough: the default only applies when the key is
+    missing. A null or numeric value compares against the other entries' strings and
+    raises TypeError inside sorted(), which main() swallows — so `attic list` would
+    print nothing and exit 0, hiding EVERY archive rather than the one corrupt entry.
+    This is the recovery path; it must degrade per-record, never wholesale.
+    """
+    stamp = manifest.get("archived_at")
+    return stamp if isinstance(stamp, str) else ""
 
 
 def resolve_id(home: AtticHome, prefix: str) -> dict:
-    matches = [m for m in load_manifests(home) if m["id"].startswith(prefix)]
+    manifests = load_manifests(home)
+    for manifest in manifests:
+        if manifest["id"] == prefix:      # a complete ID is never ambiguous
+            return manifest
+    matches = [m for m in manifests if m["id"].startswith(prefix)]
     if not matches:
         raise LookupError(f"no archive matching {prefix!r}")
     if len(matches) > 1:
@@ -2357,7 +2401,12 @@ Add to the dispatch chain in `main`, after the `reap` branch:
             manifest = resolve_id(home, args.archive_id)
             print(json.dumps(manifest, indent=2))
             print("\n--- scrollback ---\n")
-            print((home.archive_dir / manifest["id"] / "scrollback.txt").read_text())
+            scrollback = home.archive_dir / manifest["id"] / "scrollback.txt"
+            try:
+                print(scrollback.read_text(encoding="utf-8"))
+            except OSError as exc:
+                # A partial archive still has a usable manifest and resume command.
+                print(f"(scrollback unavailable: {exc})", file=sys.stderr)
 ```
 
 Add `import json` to the top of `cli.py`.
