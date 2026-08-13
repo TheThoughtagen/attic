@@ -83,7 +83,13 @@ class Archiver:
             "idle_since": iso(action.idle_since),
             "archived_at": iso(now),
             "scrollback_lines": len(scrollback.splitlines()),
+            # Two forms on purpose. `resume` is for humans to read and paste from
+            # `attic show`. `resume_argv` is what `attic restore` executes verbatim:
+            # recording the exact tokens at archive time is what keeps an old archive
+            # self-describing if the agent CLI's flags change later. Reconstructing
+            # at restore time would silently apply TODAY's flags to an OLD session.
             "resume": f"cd {pane.cwd} && claude --resume {pane.session_uuid}",
+            "resume_argv": ["claude", "--resume", pane.session_uuid],
         }
 
         created = False

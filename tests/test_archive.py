@@ -70,6 +70,7 @@ def test_archive_writes_scrollback_and_manifest(tmp_path):
     assert m["idle_since"] == "2026-08-13T10:47:00Z"
     assert m["scrollback_lines"] == 2
     assert m["resume"] == "cd /tmp/repo && claude --resume u-1"
+    assert m["resume_argv"] == ["claude", "--resume", "u-1"]
 
 
 def test_archive_sizes_read_from_pane_scroll_rows(tmp_path):

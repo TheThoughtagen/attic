@@ -15,6 +15,7 @@ from .catalog import format_list, load_manifests, resolve_id
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
 from .policy import Action, Archive, decide, update_state
+from .restore import restore as restore_archive
 from .store import AtticHome
 
 log = logging.getLogger("attic")
@@ -148,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="list archived sessions")
     show = sub.add_parser("show", help="print an archive's manifest and scrollback")
     show.add_argument("archive_id")
+    restore_p = sub.add_parser("restore", help="reopen an archived session")
+    restore_p.add_argument("archive_id")
 
     args = parser.parse_args(argv)
 
@@ -189,6 +192,15 @@ def main(argv: list[str] | None = None) -> int:
             except OSError as exc:
                 # A partial archive still has a usable manifest and resume command.
                 print(f"(scrollback unavailable: {exc})", file=sys.stderr)
+        elif args.command == "restore":
+            try:
+                manifest = resolve_id(home, args.archive_id)
+                pane_id = restore_archive(home, HerdrClient(), manifest, now)
+            except (LookupError, FileNotFoundError) as exc:
+                # Interactive command: a clear message, not a traceback.
+                print(str(exc), file=sys.stderr)
+                return 0
+            print(f"restored {manifest['id']} into {pane_id}")
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)
     return 0
