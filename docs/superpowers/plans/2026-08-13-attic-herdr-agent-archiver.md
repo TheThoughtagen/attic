@@ -496,8 +496,10 @@ Create `tests/test_policy.py`:
 ```python
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from attic.models import Pane
-from attic.policy import Archive, Skip, decide, update_state
+from attic.policy import Archive, Skip, decide, iso, update_state
 from attic.store import Config, PaneState
 
 NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
@@ -564,11 +566,16 @@ def test_vanished_panes_are_dropped_from_state():
 
 
 def test_recycled_pane_id_gets_a_fresh_clock():
-    # Same pane_id, different terminal_id => must not inherit the old clock.
-    prior = {"term_old": idle_since(10, revision=5)}
-    st = update_state([mkpane("w4:p2", terminal_id="term_new")], prior, NOW)
-    assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"
-    assert "term_old" not in st
+    """A closed pane's slot is reused: same pane_id, new terminal_id. If state were
+    keyed by pane_id, the new pane would inherit the dead one's idle clock and be
+    archived seconds after opening. The stale entry is deliberately keyed under the
+    PANE id and given a matching revision, so a pane_id-keyed implementation would
+    find it, judge the clock unchanged, and preserve the stale 02:00 timestamp."""
+    prior = {"w4:p2": idle_since(10, revision=5)}
+    pane = mkpane("w4:p2", terminal_id="term_new", revision=5)
+    st = update_state([pane], prior, NOW)
+    assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"   # fresh, not 02:00
+    assert "w4:p2" not in st
 
 
 # --- decide ---------------------------------------------------------------
@@ -633,8 +640,36 @@ def test_per_tick_cap_archives_longest_idle_first():
         panes.append(p)
         st[p.terminal_id] = idle_since(hours)
     actions = decide(panes, st, NOW, CFG)
-    assert archived(actions) == ["w1:p4", "w1:p1", "w1:p2"]   # 30h, 20h, 9h
-    assert skip_reason(actions, "w1:p3") == "per-tick cap reached"
+    # Selection is the safety property: the three longest-idle, not the first three seen.
+    assert set(archived(actions)) == {"w1:p4", "w1:p1", "w1:p2"}   # 30h, 20h, 9h
+    # With a 4h threshold all five are eligible, so BOTH shorter ones are capped.
+    assert skip_reason(actions, "w1:p3") == "per-tick cap reached"   # 6h
+    assert skip_reason(actions, "w1:p0") == "per-tick cap reached"   # 5h
+
+
+def test_decide_returns_verdicts_in_input_order():
+    """Output order is presentation, not policy: `attic reap --dry-run` prints one
+    line per pane and must read in pane order for the operator's soak review."""
+    panes, st = [], {}
+    for i, hours in enumerate([5, 20, 9]):
+        p = mkpane(f"w1:p{i}")
+        panes.append(p)
+        st[p.terminal_id] = idle_since(hours)
+    actions = decide(panes, st, NOW, CFG)
+    assert [a.pane.pane_id for a in actions] == ["w1:p0", "w1:p1", "w1:p2"]
+
+
+def test_iso_normalizes_non_utc_input_to_z():
+    """iso() enforces the UTC contract itself rather than trusting call sites."""
+    mst = timezone(timedelta(hours=-6))
+    assert iso(datetime(2026, 8, 13, 6, 0, 0, tzinfo=mst)) == "2026-08-13T12:00:00Z"
+
+
+def test_iso_rejects_naive_datetime():
+    """A naive datetime would be read as system local time, shifting the idle clock
+    by the local UTC offset and archiving panes that are not eligible. Fail loudly."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        iso(datetime(2026, 8, 13, 12, 0, 0))
 
 
 def test_every_pane_receives_a_verdict():
@@ -659,7 +694,7 @@ Create `src/attic/policy.py`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import Pane
 from .store import Config, PaneState
@@ -683,7 +718,18 @@ Action = Archive | Skip
 
 
 def iso(dt: datetime) -> str:
-    return dt.isoformat().replace("+00:00", "Z")
+    """Serialize as UTC ISO-8601 with a Z suffix, enforcing the project-wide UTC
+    contract here rather than trusting every call site. Three later modules import this.
+
+    Naive datetimes are rejected rather than guessed at: astimezone() would read them
+    as system local time, shifting first_idle_at by the local UTC offset (six hours
+    in the author's zone). A fast idle clock against a four-hour threshold archives
+    panes that are not eligible — the exact false positive this project exists to
+    prevent. Raising aborts the tick and archives nothing, which is the safe direction.
+    """
+    if dt.tzinfo is None:
+        raise ValueError("iso() requires a timezone-aware datetime")
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse(ts: str) -> datetime:
@@ -858,10 +904,25 @@ def test_subprocess_failure_raises_herdr_error():
         HerdrClient(runner=Recorder([OSError("socket gone")])).pane_list()
 
 
-def test_tab_create_returns_new_pane_id():
-    payload = {"result": {"tab": {"tab_id": "w4:t9", "panes": [{"pane_id": "w4:p9"}]}}}
+def test_tab_create_returns_root_pane_id():
+    """Payload copied from a real `herdr tab create` response (protocol 19).
+    The pane lives under result.root_pane; result.tab carries no pane list."""
+    payload = {"id": "cli:tab:create", "result": {
+        "root_pane": {"pane_id": "w4:p9", "tab_id": "w4:t9", "workspace_id": "w4",
+                      "terminal_id": "term_abc", "cwd": "/private/tmp",
+                      "agent_status": "unknown", "revision": 0},
+        "tab": {"tab_id": "w4:t9", "label": "Some task", "workspace_id": "w4",
+                "pane_count": 1},
+        "type": "tab_created"}}
     client = HerdrClient(runner=Recorder([json.dumps(payload)]))
     assert client.tab_create("/tmp/repo", "Some task") == "w4:p9"
+
+
+def test_tab_create_raises_when_no_root_pane():
+    payload = {"result": {"tab": {"tab_id": "w4:t9"}, "type": "tab_created"}}
+    client = HerdrClient(runner=Recorder([json.dumps(payload)]))
+    with pytest.raises(HerdrError):
+        client.tab_create("/tmp/repo", "Some task")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -947,12 +1008,18 @@ class HerdrClient:
         self._text("pane", "close", pane_id)
 
     def tab_create(self, cwd: str, label: str) -> str:
+        """Return the pane_id of the new tab's root pane.
+
+        Shape verified against live herdr 0.8.0 (protocol 19): the response is
+        {"result": {"root_pane": {...,"pane_id": "w3:pC"}, "tab": {...}, "type":
+        "tab_created"}}. Note `result.tab` carries NO pane list — the pane lives
+        only under `result.root_pane`.
+        """
         node = self._json("tab", "create", "--cwd", cwd, "--label", label, "--focus")
-        tab = node.get("result", {}).get("tab", {})
-        panes = tab.get("panes") or []
-        if not panes:
+        pane_id = node.get("result", {}).get("root_pane", {}).get("pane_id")
+        if not pane_id:
             raise HerdrError("tab create returned no pane")
-        return panes[0]["pane_id"]
+        return pane_id
 
     def pane_run(self, pane_id: str, command: list[str]) -> None:
         self._text("pane", "run", pane_id, *command)
