@@ -22,6 +22,10 @@ class Config:
 class PaneState:
     first_idle_at: str | None
     last_revision: int
+    # Exemptions. `snooze_until` expires on its own so a forgotten snooze cannot
+    # become a permanent leak; `pinned` requires an explicit unpin.
+    snooze_until: str | None = None
+    pinned: bool = False
 
 
 class AtticHome:
@@ -97,13 +101,36 @@ class AtticHome:
                 last_revision = int(val.get("last_revision", 0))
             except (TypeError, ValueError):
                 continue
-            out[key] = PaneState(first_idle_at=first_idle_at, last_revision=last_revision)
+            snooze_until = val.get("snooze_until")
+            if snooze_until is not None:
+                if not isinstance(snooze_until, str):
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(snooze_until.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if parsed.tzinfo is None:
+                    continue          # naive stamps raise at comparison time
+            pinned = val.get("pinned", False)
+            if not isinstance(pinned, bool):
+                continue
+            out[key] = PaneState(
+                first_idle_at=first_idle_at,
+                last_revision=last_revision,
+                snooze_until=snooze_until,
+                pinned=pinned,
+            )
         return out
 
     def save_state(self, state: dict[str, PaneState]) -> None:
         self.ensure()
         payload = {
-            k: {"first_idle_at": v.first_idle_at, "last_revision": v.last_revision}
+            k: {
+                "first_idle_at": v.first_idle_at,
+                "last_revision": v.last_revision,
+                "snooze_until": v.snooze_until,
+                "pinned": v.pinned,
+            }
             for k, v in state.items()
         }
         tmp = self.state_path.with_suffix(".json.tmp")

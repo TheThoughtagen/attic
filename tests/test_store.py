@@ -108,3 +108,42 @@ def test_semantically_corrupt_entries_are_skipped_not_raised(tmp_path):
     assert set(loaded) == {"term_good"}
     assert loaded["term_good"].last_revision == 3
     assert loaded["term_good"].first_idle_at == "2026-08-13T00:00:00Z"
+
+
+def test_exemptions_round_trip(tmp_path):
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.save_state({"term_a": PaneState("2026-08-13T00:00:00Z", 3,
+                                         snooze_until="2026-08-14T00:00:00Z", pinned=True)})
+    loaded = home.load_state()["term_a"]
+    assert loaded.snooze_until == "2026-08-14T00:00:00Z"
+    assert loaded.pinned is True
+
+
+def test_exemptions_default_to_absent(tmp_path):
+    """Entries written before this feature existed must still load."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.state_path.write_text(
+        json.dumps({"term_a": {"first_idle_at": None, "last_revision": 1}}), encoding="utf-8"
+    )
+    loaded = home.load_state()["term_a"]
+    assert loaded.snooze_until is None
+    assert loaded.pinned is False
+
+
+def test_malformed_exemption_fields_drop_the_entry(tmp_path):
+    """Same rule as first_idle_at: an entry we cannot trust is dropped, never
+    fatal. A raise here kills every future tick with no visible symptom."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.state_path.write_text(json.dumps({
+        "term_good": {"first_idle_at": None, "last_revision": 1,
+                      "snooze_until": "2026-08-14T00:00:00Z", "pinned": False},
+        "term_bad_stamp": {"first_idle_at": None, "last_revision": 1,
+                           "snooze_until": "not a date"},
+        "term_naive_stamp": {"first_idle_at": None, "last_revision": 1,
+                             "snooze_until": "2026-08-14T00:00:00"},
+        "term_bad_pin": {"first_idle_at": None, "last_revision": 1, "pinned": "yes"},
+    }), encoding="utf-8")
+    assert set(home.load_state()) == {"term_good"}
