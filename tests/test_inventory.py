@@ -74,6 +74,44 @@ def test_prune_archives_spares_recent_dirs_without_manifest(tmp_path):
     assert (home.archive_dir / "20260101T000000Z-broken").exists()
 
 
+def test_malformed_manifests_never_raise_and_fall_back_to_mtime(tmp_path):
+    """A manifest we cannot trust is treated as no manifest: mtime-gated, never fatal.
+    prune_archives is the only irreversible operation here and it runs unattended —
+    an exception mid-loop aborts every remaining directory in that run."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    payloads = {
+        "a-list": "[]",
+        "b-string": '"x"',
+        "c-number": "42",
+        "d-nonstring-stamp": '{"archived_at": 12345}',
+        "e-unparseable-stamp": '{"archived_at": "not a date"}',
+        "f-naive-stamp": '{"archived_at": "2026-01-01T00:00:00"}',
+        "g-missing-key": "{}",
+        "h-not-json": "{not json",
+    }
+    for name, payload in payloads.items():
+        d = home.archive_dir / f"20260101T000000Z-{name}"
+        d.mkdir()
+        (d / "manifest.json").write_text(payload, encoding="utf-8")
+        stamp = (NOW - timedelta(days=200)).timestamp()
+        os.utime(d, (stamp, stamp))
+    removed = prune_archives(home, NOW, retention_days=30)
+    assert len(removed) == len(payloads)
+    assert list(home.archive_dir.iterdir()) == []
+
+
+def test_malformed_manifest_within_retention_is_spared(tmp_path):
+    """An untrustworthy manifest must not shorten a directory's life."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    d = home.archive_dir / "20260812T000000Z-bad"
+    d.mkdir()
+    (d / "manifest.json").write_text("[]", encoding="utf-8")
+    assert prune_archives(home, NOW, retention_days=30) == []
+    assert d.exists()
+
+
 def test_prune_reclaims_manifest_less_dirs_past_retention(tmp_path):
     """Orphaned partial archives are invisible to `attic list`, so without this they
     would be immortal — accumulating forever in a tool built to reclaim resources."""
