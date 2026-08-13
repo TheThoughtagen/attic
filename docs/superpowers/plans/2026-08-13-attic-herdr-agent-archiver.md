@@ -1790,7 +1790,9 @@ git commit -m "feat: add inventory snapshots and retention pruning"
 - Consumes: everything from Tasks 1-6
 - Produces: `run_tick(home, client, now, dry_run: bool = False) -> TickResult`; `TickResult` frozen dataclass (`actions: list[Action]`, `archived: list[str]` (archive ids), `reaped: bool`, `reason: str`), plus `main(argv: list[str] | None = None) -> int`
 
-**Ordering contract (do not reorder):** snapshot → prune → guards → `update_state` → `save_state` → `decide` → per-action archive → close.
+**Ordering contract (do not reorder):** snapshot → prune → `update_state` → `save_state` → evaluate guards → `decide` → per-action archive → close.
+
+State updates run BEFORE the guards deliberately: the idle clock must keep advancing while paused, or `reap --dry-run` during the soak would report durations that bear no relation to how long a pane has actually been idle. Guards gate execution, never observation.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1850,6 +1852,46 @@ def test_pause_file_blocks_reaping_but_not_inventory(tmp_path):
     assert result.reason == "paused"
     assert client.closed == []
     assert (home.inventory_dir / "2026-08-13.jsonl").exists()
+
+
+def test_dry_run_shows_verdicts_even_while_paused(tmp_path):
+    """The soak depends on this. `attic` installs PAUSED, and the user reads
+    `attic reap --dry-run` for days before granting reaping authority by removing
+    PAUSE. If the pause guard short-circuited before decide(), that output would be
+    empty and the entire trust-building procedure would be impossible to perform."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    client = FakeHerdrClient(panes=[pane])
+    result = run_tick(home, client, NOW, dry_run=True)
+    assert len(result.actions) == 1
+    assert result.reason == "paused"
+    assert client.closed == []
+    assert list(home.archive_dir.glob("2026*")) == []
+
+
+def test_paused_tick_still_reports_what_it_would_have_done(tmp_path):
+    """A paused tick computes verdicts so the log can say what it declined to do."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    client = FakeHerdrClient(panes=[pane])
+    result = run_tick(home, client, NOW)
+    assert result.reaped is False
+    assert result.reason == "paused"
+    assert len(result.actions) == 1
+    assert client.closed == []
+
+
+def test_idle_clock_advances_while_paused(tmp_path):
+    """Guards gate execution, never observation. If the clock froze during a pause,
+    dry-run durations during the soak would bear no relation to reality."""
+    pane = mkpane("w4:p2")
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.pause_path.touch()
+    run_tick(home, FakeHerdrClient(panes=[pane]), NOW)
+    assert home.load_state()[pane.terminal_id].first_idle_at == "2026-08-13T15:47:00Z"
 
 
 def test_protocol_mismatch_blocks_reaping(tmp_path):
@@ -1981,23 +2023,34 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
     state = update_state(panes, home.load_state(), now)
     home.save_state(state)
 
+    # Determine whether reaping is permitted, but do NOT return yet: verdicts are
+    # computed either way. `attic` installs PAUSED and the soak procedure is "read
+    # `attic reap --dry-run` for days, then grant authority by removing PAUSE" — so
+    # short-circuiting before decide() would make that output empty and the whole
+    # trust-building step impossible.
+    blocked: str | None = None
     if home.is_paused():
-        log.info("PAUSE present, reaping disabled")
-        return TickResult(reason="paused")
-
-    try:
-        protocol = client.protocol()
-    except HerdrError as exc:
-        return TickResult(reason=f"herdr protocol unreadable: {exc}")
-    if protocol != config.herdr_protocol:
-        log.warning(
-            "herdr protocol %s != pinned %s, reaping disabled", protocol, config.herdr_protocol
-        )
-        return TickResult(reason=f"protocol mismatch: {protocol} != {config.herdr_protocol}")
+        blocked = "paused"
+    else:
+        try:
+            protocol = client.protocol()
+        except HerdrError as exc:
+            blocked = f"herdr protocol unreadable: {exc}"
+        else:
+            if protocol != config.herdr_protocol:
+                log.warning(
+                    "herdr protocol %s != pinned %s, reaping disabled",
+                    protocol, config.herdr_protocol,
+                )
+                blocked = f"protocol mismatch: {protocol} != {config.herdr_protocol}"
 
     actions = decide(panes, state, now, config)
+
     if dry_run:
-        return TickResult(actions=actions, reason="dry-run")
+        return TickResult(actions=actions, reason=blocked or "dry-run")
+    if blocked:
+        log.info("reaping disabled: %s", blocked)
+        return TickResult(actions=actions, reason=blocked)
 
     archiver = Archiver(home, client)
     archived: list[str] = []
@@ -2620,8 +2673,12 @@ See the design spec: `docs/superpowers/specs/2026-08-13-attic-herdr-agent-archiv
 1. Let inventory run for a few days: `attic list` stays empty, but
    `~/.attic/inventory/` fills up. Confirm it is capturing what you expect.
 2. Run `attic reap --dry-run` daily. Read every verdict. Confirm that nothing you
-   care about is ever marked `ARCHIVE`, especially anything `blocked`.
-3. When the verdicts look right, `rm ~/.attic/PAUSE`.
+   care about is ever marked `ARCHIVE`, especially anything `blocked`. Dry-run works
+   while paused and reports real idle durations — the clock keeps advancing during a
+   pause, so what you see is what would actually happen.
+3. When the verdicts look right, `rm ~/.attic/PAUSE`. Expect the first unpaused tick
+   to act immediately on panes the dry-run has been showing as `ARCHIVE` — they have
+   been genuinely idle the whole time, and the per-tick cap of 3 bounds the burst.
 4. After the first real archive, run `attic restore <id>` immediately and confirm the
    session resumes with its history intact.
 
