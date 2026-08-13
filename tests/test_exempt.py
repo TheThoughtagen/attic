@@ -73,3 +73,13 @@ def test_unsnooze_clears_the_deadline(tmp_path):
     set_snooze(home, "term_abc", NOW + timedelta(hours=8))
     set_snooze(home, "term_abc", None)
     assert home.load_state()["term_abc"].snooze_until is None
+
+
+def test_mutate_rejects_an_unknown_field(tmp_path):
+    """setattr would accept a typo, create a phantom attribute, and let save_state
+    drop it silently — a pin that reports success and never persists."""
+    from attic.exempt import _mutate
+    home = AtticHome(tmp_path)
+    home.ensure()
+    with pytest.raises(ValueError, match="snoozed_until"):
+        _mutate(home, "term_abc", snoozed_until="2026-08-14T00:00:00Z")

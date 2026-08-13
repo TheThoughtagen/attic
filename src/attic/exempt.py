@@ -8,11 +8,18 @@ silently inherit the protection. The identifier is resolved at command time.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime
 
 from .models import Pane
 from .policy import iso
 from .store import AtticHome, PaneState
+
+# setattr would accept a typo'd field name, create a phantom attribute, and let
+# save_state silently drop it — a mutation that reports success and never
+# persists. For a feature whose whole job is "this pane is protected", a silent
+# no-op is worse than a crash.
+_PANE_STATE_FIELDS = {f.name for f in fields(PaneState)}
 
 
 def resolve_terminal_id(panes: list[Pane], identifier: str) -> str:
@@ -28,6 +35,9 @@ def resolve_terminal_id(panes: list[Pane], identifier: str) -> str:
 
 def _mutate(home: AtticHome, terminal_id: str, **changes) -> PaneState:
     """Read-modify-write a single entry, leaving the idle clock untouched."""
+    unknown = set(changes) - _PANE_STATE_FIELDS
+    if unknown:
+        raise ValueError(f"not a PaneState field: {', '.join(sorted(unknown))}")
     state = home.load_state()
     entry = state.get(terminal_id) or PaneState(None, 0)
     for field, value in changes.items():
