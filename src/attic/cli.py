@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import traceback
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .archive import Archiver
+from .catalog import format_list, load_manifests, resolve_id
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
 from .policy import Action, Archive, decide, update_state
@@ -143,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("tick", help="snapshot inventory and reap idle agent panes")
     reap = sub.add_parser("reap", help="reap now")
     reap.add_argument("--dry-run", action="store_true", help="print verdicts, change nothing")
+    sub.add_parser("list", help="list archived sessions")
+    show = sub.add_parser("show", help="print an archive's manifest and scrollback")
+    show.add_argument("archive_id")
 
     args = parser.parse_args(argv)
 
@@ -167,6 +172,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "reap":
             result = run_tick(home, HerdrClient(), now, dry_run=args.dry_run)
             _print_verdicts(result)
+        elif args.command == "list":
+            print(format_list(load_manifests(home)))
+        elif args.command == "show":
+            try:
+                manifest = resolve_id(home, args.archive_id)
+            except LookupError as exc:
+                # Interactive command: a clear message, not a traceback.
+                print(str(exc), file=sys.stderr)
+                return 0
+            print(json.dumps(manifest, indent=2))
+            print("\n--- scrollback ---\n")
+            scrollback = home.archive_dir / manifest["id"] / "scrollback.txt"
+            print(scrollback.read_text(encoding="utf-8"))
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)
     return 0
