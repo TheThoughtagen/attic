@@ -904,6 +904,55 @@ def test_subprocess_failure_raises_herdr_error():
         HerdrClient(runner=Recorder([OSError("socket gone")])).pane_list()
 
 
+def test_non_integer_protocol_raises_herdr_error():
+    run = Recorder(["server:\n  protocol: banana\n"])
+    with pytest.raises(HerdrError, match="non-integer protocol"):
+        HerdrClient(runner=run).protocol()
+
+
+def test_valid_json_that_is_not_an_object_raises_herdr_error():
+    """A list/string/number parses fine, then explodes at the first .get().
+    Callers catch HerdrError only, so it must be converted here."""
+    for payload in ("[1, 2, 3]", '"a string"', "42"):
+        with pytest.raises(HerdrError, match="expected object"):
+            HerdrClient(runner=Recorder([payload])).pane_list()
+
+
+def test_non_object_result_raises_herdr_error():
+    with pytest.raises(HerdrError, match="result is not an object"):
+        HerdrClient(runner=Recorder(['{"result": [1, 2]}'])).workspace_labels()
+
+
+def test_workspace_entry_missing_id_is_skipped_not_raised():
+    payload = {"result": {"workspaces": [
+        {"workspace_id": "w3", "label": "clients"},
+        {"label": "orphan with no id"},
+    ]}}
+    labels = HerdrClient(runner=Recorder([json.dumps(payload)])).workspace_labels()
+    assert labels == {"w3": "clients"}
+
+
+def test_tab_create_raises_when_root_pane_is_not_an_object():
+    with pytest.raises(HerdrError, match="no root pane"):
+        HerdrClient(runner=Recorder(['{"result": {"root_pane": "nope"}}'])).tab_create(
+            "/tmp/repo", "Some task"
+        )
+
+
+def test_command_argv_matches_verified_shapes():
+    """These shapes were verified against live herdr 0.8.0. Pin them so a refactor
+    cannot silently drift from the server's actual interface."""
+    run = Recorder(["", "", '{"result": {"root_pane": {"pane_id": "w9:p9"}}}'])
+    client = HerdrClient(runner=run)
+    client.pane_close("w1:p1")
+    client.pane_run("w1:p1", ["claude", "--resume", "u-1"])
+    client.tab_create("/tmp/repo", "Some task")
+    assert run.calls[0] == ["herdr", "pane", "close", "w1:p1"]
+    assert run.calls[1] == ["herdr", "pane", "run", "w1:p1", "claude", "--resume", "u-1"]
+    assert run.calls[2] == ["herdr", "tab", "create", "--cwd", "/tmp/repo",
+                            "--label", "Some task", "--focus"]
+
+
 def test_tab_create_returns_root_pane_id():
     """Payload copied from a real `herdr tab create` response (protocol 19).
     The pane lives under result.root_pane; result.tab carries no pane list."""
@@ -970,12 +1019,30 @@ class HerdrClient:
     def _json(self, *args: str) -> dict:
         raw = self._text(*args)
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except ValueError as exc:
             raise HerdrError(f"herdr {' '.join(args)} returned non-JSON: {raw[:200]!r}") from exc
+        # Valid JSON that is a list/string/number would sail through and raise
+        # AttributeError at the first .get(). Callers catch HerdrError only.
+        if not isinstance(parsed, dict):
+            raise HerdrError(
+                f"herdr {' '.join(args)} returned {type(parsed).__name__}, expected object"
+            )
+        return parsed
+
+    def _result(self, *args: str) -> dict:
+        """Fetch a command's `result` object, guaranteeing it is a dict."""
+        node = self._json(*args).get("result", {})
+        if not isinstance(node, dict):
+            raise HerdrError(f"herdr {' '.join(args)}: result is not an object")
+        return node
 
     def protocol(self) -> int:
-        """Parse the protocol line from the `server:` block of `herdr status`."""
+        """Parse the protocol line from the `server:` block of `herdr status`.
+
+        Both the `client:` and `server:` blocks carry a `protocol:` line; only the
+        server's governs compatibility.
+        """
         text = self._text("status")
         in_server = False
         for line in text.splitlines():
@@ -985,18 +1052,32 @@ class HerdrClient:
             if line and not line[0].isspace():
                 in_server = False
             if in_server and "protocol:" in line:
-                return int(line.split("protocol:")[1].strip())
+                value = line.split("protocol:")[1].strip()
+                try:
+                    return int(value)
+                except ValueError as exc:
+                    raise HerdrError(
+                        f"herdr status reported non-integer protocol {value!r}"
+                    ) from exc
         raise HerdrError("could not determine herdr server protocol")
 
     def pane_list(self) -> list[Pane]:
-        return parse_pane_list(self._json("pane", "list"))
+        # parse_pane_list accepts a bare {"panes": [...]} object as well as the envelope.
+        return parse_pane_list(self._result("pane", "list"))
 
     def snapshot(self) -> dict:
         return self._json("api", "snapshot")
 
     def workspace_labels(self) -> dict[str, str]:
-        node = self._json("workspace", "list").get("result", {})
-        return {w["workspace_id"]: w.get("label", "") for w in node.get("workspaces", [])}
+        # Malformed entries are skipped rather than fatal, consistent with
+        # load_state: a missing label only costs a manifest the workspace's
+        # display name, while raising would kill the whole unattended tick.
+        node = self._result("workspace", "list")
+        out: dict[str, str] = {}
+        for w in node.get("workspaces", []):
+            if isinstance(w, dict) and w.get("workspace_id"):
+                out[w["workspace_id"]] = w.get("label", "")
+        return out
 
     def pane_read(self, pane_id: str, lines: int) -> str:
         return self._text(
@@ -1015,10 +1096,11 @@ class HerdrClient:
         "tab_created"}}. Note `result.tab` carries NO pane list — the pane lives
         only under `result.root_pane`.
         """
-        node = self._json("tab", "create", "--cwd", cwd, "--label", label, "--focus")
-        pane_id = node.get("result", {}).get("root_pane", {}).get("pane_id")
+        node = self._result("tab", "create", "--cwd", cwd, "--label", label, "--focus")
+        root = node.get("root_pane")
+        pane_id = root.get("pane_id") if isinstance(root, dict) else None
         if not pane_id:
-            raise HerdrError("tab create returned no pane")
+            raise HerdrError("tab create returned no root pane")
         return pane_id
 
     def pane_run(self, pane_id: str, command: list[str]) -> None:
