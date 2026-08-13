@@ -1290,6 +1290,17 @@ def test_archive_never_closes_the_pane_itself(tmp_path):
     assert client.closed == []
 
 
+def test_archive_survives_dense_unicode_scrollback(tmp_path):
+    """Scrollback is full of box drawing, spinners and emoji. launchd starts jobs
+    with no LANG, so a locale-derived encoding differs from the shell's — guessing
+    wrong raises UnicodeEncodeError and every archive fails silently forever."""
+    home, client, action = setup(tmp_path)
+    client.scrollback = "◐ working… ╭───╮ │ ✳ │ ╰───╯ 🔧 café\n"
+    path = Archiver(home, client).archive(action, "wh dev", NOW)
+    assert path is not None
+    assert (path / "scrollback.txt").read_text(encoding="utf-8") == client.scrollback
+
+
 def test_append_index_is_one_json_object_per_line(tmp_path):
     home, client, _ = setup(tmp_path)
     arch = Archiver(home, client)
@@ -1354,7 +1365,11 @@ def make_archive_id(now: datetime, title: str, existing: set[str]) -> str:
 
 
 def _write_fsynced(path: Path, text: str) -> None:
-    with open(path, "w") as fh:
+    # encoding is explicit, not locale-derived: scrollback is dense Unicode (box
+    # drawing, spinners, emoji) and launchd starts jobs with no LANG set, so the
+    # default encoding under the timer differs from the one in your shell. Guessing
+    # wrong raises UnicodeEncodeError, and every archive silently fails forever.
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
@@ -1414,7 +1429,7 @@ class Archiver:
 
     def append_index(self, entry: dict) -> None:
         self.home.ensure()
-        with open(self.home.index_path, "a") as fh:
+        with open(self.home.index_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
