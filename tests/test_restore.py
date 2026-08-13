@@ -96,7 +96,7 @@ def test_restore_prints_the_manifest_when_cwd_is_gone(monkeypatch, capsys, tmp_p
     d.mkdir(parents=True)
     (d / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setenv("ATTIC_HOME", str(tmp_path))
-    assert main(["restore", "20260812T000000Z-x"]) == 0
+    assert main(["restore", "20260812T000000Z-x"]) == 1
     err = capsys.readouterr().err
     assert "cwd no longer exists" in err
     assert "u-1" in err            # the manifest itself was shown, not just the message

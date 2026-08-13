@@ -79,10 +79,6 @@ class HerdrClient:
         # parse_pane_list accepts a bare {"panes": [...]} object as well as the envelope.
         return parse_pane_list(self._result("pane", "list"))
 
-    def snapshot(self) -> dict:
-        # Only ever serialized into the inventory, never indexed - no dict guard needed.
-        return self._json("api", "snapshot")
-
     def workspace_labels(self) -> dict[str, str]:
         # Malformed entries are skipped rather than fatal, consistent with
         # load_state: a missing label only costs a manifest the workspace's

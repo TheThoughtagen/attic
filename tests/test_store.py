@@ -77,6 +77,22 @@ def test_default_home_honors_env(tmp_path, monkeypatch):
     assert AtticHome.default().root == tmp_path / "custom"
 
 
+def test_state_drops_entries_with_unparseable_or_naive_first_idle_at(tmp_path):
+    """A stamp that fails to parse, or parses but is naive, would otherwise reach
+    policy._parse -> decide() and raise TypeError/ValueError outside run_tick's
+    `except HerdrError`, killing every future tick. Apply the same validation
+    inventory._archived_at already uses."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.state_path.write_text(json.dumps({
+        "term_good": {"first_idle_at": "2026-08-13T00:00:00Z", "last_revision": 3},
+        "term_unparseable": {"first_idle_at": "not a date", "last_revision": 1},
+        "term_naive": {"first_idle_at": "2026-01-01T00:00:00", "last_revision": 1},
+    }))
+    loaded = home.load_state()
+    assert set(loaded) == {"term_good"}
+
+
 def test_semantically_corrupt_entries_are_skipped_not_raised(tmp_path):
     """Valid JSON with wrong-typed fields must not raise: attic runs unattended
     from a LaunchAgent, so an exception here silently kills every future tick."""

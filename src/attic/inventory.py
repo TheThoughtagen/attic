@@ -33,6 +33,7 @@ def append_inventory(
     }
     path = home.inventory_dir / f"{now.strftime('%Y-%m-%d')}.jsonl"
     with open(path, "a", encoding="utf-8") as fh:
+        os.chmod(path, 0o600)
         fh.write(json.dumps(entry) + "\n")
         fh.flush()
         os.fsync(fh.fileno())

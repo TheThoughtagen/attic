@@ -14,7 +14,7 @@ from .archive import Archiver
 from .catalog import format_list, load_manifests, resolve_id
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
-from .policy import Action, Archive, decide, update_state
+from .policy import Action, Archive, decide, iso, update_state
 from .restore import restore as restore_archive
 from .store import AtticHome
 
@@ -111,7 +111,7 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
             "title": pane.title,
             "cwd": pane.cwd,
             "session_uuid": pane.session_uuid,
-            "archived_at": now.isoformat().replace("+00:00", "Z"),
+            "archived_at": iso(now),
             "close_failed": close_failed,
         }
         try:
@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             except LookupError as exc:
                 # Interactive command: a clear message, not a traceback.
                 print(str(exc), file=sys.stderr)
-                return 0
+                return 1
             print(json.dumps(manifest, indent=2))
             print("\n--- scrollback ---\n")
             scrollback = home.archive_dir / manifest["id"] / "scrollback.txt"
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             except LookupError as exc:
                 # Interactive command: a clear message, not a traceback.
                 print(str(exc), file=sys.stderr)
-                return 0
+                return 1
             try:
                 pane_id = restore_archive(home, HerdrClient(), manifest, now)
             except FileNotFoundError as exc:
@@ -206,11 +206,12 @@ def main(argv: list[str] | None = None) -> int:
                 # the user recover by hand if the directory merely moved.
                 print(str(exc), file=sys.stderr)
                 print(json.dumps(manifest, indent=2), file=sys.stderr)
-                return 0
+                return 1
             except HerdrError as exc:
                 print(str(exc), file=sys.stderr)
-                return 0
+                return 1
             print(f"restored {manifest['id']} into {pane_id}")
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)
+        return 0 if args.command in ("tick", "reap") else 1
     return 0

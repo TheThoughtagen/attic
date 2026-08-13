@@ -72,6 +72,23 @@ def test_list_survives_a_manifest_with_a_null_timestamp(tmp_path):
     assert "Bad" in titles
 
 
+def test_non_string_id_is_replaced_with_directory_name(tmp_path):
+    """setdefault("id", ...) only fills a MISSING key: a manifest with an integer
+    id keeps it, and resolve_id's m["id"].startswith(prefix) then raises
+    AttributeError — not LookupError, so main()'s handler swallows it and
+    `attic restore` fails silently. The id must always end up a string."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    path = home.archive_dir / "20260812T000000Z-weird"
+    path.mkdir(parents=True)
+    (path / "manifest.json").write_text(json.dumps({
+        "id": 12345, "title": "Weird", "archived_at": "2026-08-12T00:00:00Z",
+    }), encoding="utf-8")
+    manifests = load_manifests(home)
+    assert manifests[0]["id"] == "20260812T000000Z-weird"
+    assert resolve_id(home, "20260812T000000Z-weird")["title"] == "Weird"
+
+
 def test_exact_id_wins_over_a_longer_prefix_match(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()

@@ -1,5 +1,5 @@
-import builtins
 import json
+import os
 import stat
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -102,14 +102,14 @@ def test_manifest_write_failure_leaves_no_orphan_directory(tmp_path):
     cleanup the directory is invisible to `attic list` AND immune to prune_archives
     (both skip manifest-less dirs), so it would accumulate forever."""
     home, client, action = setup(tmp_path)
-    real_open = builtins.open
+    real_open = os.open
 
     def flaky_open(path, *a, **k):
         if str(path).endswith("manifest.json"):
             raise OSError(28, "No space left on device")
         return real_open(path, *a, **k)
 
-    with mock.patch("attic.archive.open", flaky_open, create=True):
+    with mock.patch("attic.archive.os.open", flaky_open):
         assert Archiver(home, client).archive(action, "wh dev", NOW) is None
     assert list(home.archive_dir.iterdir()) == []
     assert client.closed == []

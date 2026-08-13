@@ -31,9 +31,6 @@ class FakeHerdrClient:
     def pane_list(self) -> list[Pane]:
         return list(self.panes)
 
-    def snapshot(self) -> dict:
-        return {"result": {"panes": [p.pane_id for p in self.panes]}}
-
     def workspace_labels(self) -> dict[str, str]:
         return dict(self.labels)
 

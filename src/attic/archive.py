@@ -37,11 +37,12 @@ def _write_fsynced(path: Path, text: str) -> None:
     # drawing, spinners, emoji) and launchd starts jobs with no LANG set, so the
     # default encoding under the timer differs from the one in your shell. Guessing
     # wrong raises UnicodeEncodeError, and every archive silently fails forever.
-    with open(path, "w", encoding="utf-8") as fh:
-        # Tighten before any content lands. Scrollback captures whatever was on a
-        # developer's screen — echoed tokens, .env dumps, connection strings — so
-        # these files are owner-only, not default-umask world-readable.
-        os.chmod(path, 0o600)
+    # Mode is set at creation via os.open, not chmod()'d afterward: open(path, "w")
+    # followed by chmod leaves a window where the file exists at the default umask.
+    # Scrollback captures whatever was on a developer's screen — echoed tokens, .env
+    # dumps, connection strings — so it must never be briefly world-readable.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())

@@ -8,7 +8,7 @@ See the design spec: `docs/superpowers/specs/2026-08-13-attic-herdr-agent-archiv
 ## Install
 
 ```bash
-./install.sh          # installs the LaunchAgent, starts PAUSED
+./install.sh          # installs the LaunchAgent, starts PAUSED, puts `attic` on PATH via `uv tool install`
 ```
 
 ## The soak — do this before enabling reaping

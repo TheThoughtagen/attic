@@ -30,7 +30,7 @@ class Pane:
         scroll = obj.get("scroll") or {}
         return cls(
             pane_id=obj["pane_id"],
-            terminal_id=obj.get("terminal_id", obj["pane_id"]),
+            terminal_id=obj["terminal_id"],
             workspace_id=obj.get("workspace_id", ""),
             tab_id=obj.get("tab_id", ""),
             agent=obj.get("agent"),
@@ -46,6 +46,15 @@ class Pane:
 
 
 def parse_pane_list(payload: dict) -> list[Pane]:
-    """Accept either the full CLI envelope or a bare {"panes": [...]} object."""
+    """Accept either the full CLI envelope or a bare {"panes": [...]} object.
+
+    A pane missing pane_id or terminal_id is skipped, not fatal: it cannot be
+    identified, so it can never be archived — and raising here would escape
+    HerdrClient's HerdrError contract and kill the unattended tick.
+    """
     node = payload.get("result", payload)
-    return [Pane.from_json(p) for p in node.get("panes", [])]
+    return [
+        Pane.from_json(p)
+        for p in node.get("panes", [])
+        if isinstance(p, dict) and p.get("pane_id") and p.get("terminal_id")
+    ]

@@ -43,9 +43,9 @@ def test_prune_inventory_removes_files_past_retention(tmp_path):
 def test_prune_inventory_ignores_unparseable_names(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
-    (home.inventory_dir / "notes.txt").write_text("x")
+    (home.inventory_dir / "notes.jsonl").write_text("x")
     assert prune_inventory(home, NOW, retention_days=1) == []
-    assert (home.inventory_dir / "notes.txt").exists()
+    assert (home.inventory_dir / "notes.jsonl").exists()
 
 
 def test_prune_archives_uses_manifest_archived_at(tmp_path):

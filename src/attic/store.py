@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, fields
+from datetime import datetime
 from pathlib import Path
 
 
@@ -43,7 +44,10 @@ class AtticHome:
     def ensure(self) -> None:
         # 0700 throughout: archives hold raw terminal scrollback and the inventory
         # records every repo path you had open. Owner-only, not default umask.
-        for d in (self.root, self.inventory_dir, self.archive_dir, self.log_path.parent):
+        for d in (
+            self.root, self.inventory_dir, self.archive_dir,
+            self.log_path.parent, self.legacy_dir,
+        ):
             d.mkdir(parents=True, exist_ok=True)
             os.chmod(d, 0o700)
 
@@ -75,8 +79,20 @@ class AtticHome:
             if not isinstance(val, dict):
                 continue
             first_idle_at = val.get("first_idle_at")
-            if first_idle_at is not None and not isinstance(first_idle_at, str):
-                continue
+            if first_idle_at is not None:
+                if not isinstance(first_idle_at, str):
+                    continue
+                # Same validation inventory._archived_at applies: a stamp that fails
+                # to parse, or parses but is naive, would otherwise survive here and
+                # reach policy._parse -> decide(), raising TypeError/ValueError
+                # outside run_tick's `except HerdrError` and killing every future
+                # tick. Dropping the entry only restarts that pane's idle clock.
+                try:
+                    parsed = datetime.fromisoformat(first_idle_at.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if parsed.tzinfo is None:
+                    continue
             try:
                 last_revision = int(val.get("last_revision", 0))
             except (TypeError, ValueError):

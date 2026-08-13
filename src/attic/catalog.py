@@ -25,7 +25,8 @@ def load_manifests(home: AtticHome) -> list[dict]:
             continue
         if not isinstance(data, dict):
             continue
-        data.setdefault("id", path.name)
+        if not isinstance(data.get("id"), str):
+            data["id"] = path.name
         out.append(data)
     return sorted(out, key=_sort_key, reverse=True)
 

@@ -149,6 +149,26 @@ def test_dry_run_output_states_why_reaping_is_disabled(capsys, tmp_path):
     assert "ARCHIVE" in out
 
 
+def test_main_returns_one_for_a_nonexistent_restore(monkeypatch, tmp_path):
+    """The daemon must never die, but the CLI must stop lying: every command
+    previously returned 0, including error branches that print a message and
+    then claim success."""
+    monkeypatch.setenv("ATTIC_HOME", str(tmp_path))
+    assert main(["restore", "nonexistent-id"]) == 1
+
+
+def test_main_returns_zero_when_tick_raises(monkeypatch, tmp_path):
+    """tick and reap must keep returning 0 on every path — that is what keeps the
+    LaunchAgent alive even when run_tick blows up unexpectedly."""
+    monkeypatch.setenv("ATTIC_HOME", str(tmp_path))
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("attic.cli.run_tick", boom)
+    assert main(["tick"]) == 0
+
+
 def test_main_returns_zero_when_setup_itself_fails(monkeypatch, capsys):
     """A crashing timer stops protecting the user, and under launchd the crash
     produces no visible symptom. Even an unwritable ATTIC_HOME must exit 0."""
