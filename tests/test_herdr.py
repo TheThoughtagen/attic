@@ -83,3 +83,50 @@ def test_tab_create_raises_when_no_root_pane():
     client = HerdrClient(runner=Recorder([json.dumps(payload)]))
     with pytest.raises(HerdrError):
         client.tab_create("/tmp/repo", "Some task")
+
+
+def test_protocol_non_integer_raises_herdr_error():
+    run = Recorder(["server:\n  status: running\n  protocol: not-a-number\n"])
+    with pytest.raises(HerdrError):
+        HerdrClient(runner=run).protocol()
+
+
+def test_pane_list_non_dict_result_raises_herdr_error():
+    payload = {"result": ["not", "a", "dict"]}
+    with pytest.raises(HerdrError):
+        HerdrClient(runner=Recorder([json.dumps(payload)])).pane_list()
+
+
+def test_top_level_non_dict_json_raises_herdr_error():
+    with pytest.raises(HerdrError):
+        HerdrClient(runner=Recorder(["[1, 2, 3]"])).pane_list()
+
+
+def test_tab_create_non_dict_root_pane_raises_herdr_error():
+    payload = {"result": {"root_pane": "not-a-dict", "tab": {}, "type": "tab_created"}}
+    client = HerdrClient(runner=Recorder([json.dumps(payload)]))
+    with pytest.raises(HerdrError):
+        client.tab_create("/tmp/repo", "Some task")
+
+
+def test_workspace_labels_skips_entries_missing_workspace_id():
+    payload = {"result": {"workspaces": [
+        {"workspace_id": "w3", "label": "clients"},
+        {"label": "no id here"},
+        "not-a-dict"]}}
+    labels = HerdrClient(runner=Recorder([json.dumps(payload)])).workspace_labels()
+    assert labels == {"w3": "clients"}
+
+
+def test_command_argv_matches_verified_shapes():
+    """These shapes were verified against live herdr 0.8.0. Pin them so a refactor
+    cannot silently drift from the server's actual interface."""
+    run = Recorder(["", "", '{"result": {"root_pane": {"pane_id": "w9:p9"}}}'])
+    client = HerdrClient(runner=run)
+    client.pane_close("w1:p1")
+    client.pane_run("w1:p1", ["claude", "--resume", "u-1"])
+    client.tab_create("/tmp/repo", "Some task")
+    assert run.calls[0] == ["herdr", "pane", "close", "w1:p1"]
+    assert run.calls[1] == ["herdr", "pane", "run", "w1:p1", "claude", "--resume", "u-1"]
+    assert run.calls[2] == ["herdr", "tab", "create", "--cwd", "/tmp/repo",
+                            "--label", "Some task", "--focus"]
