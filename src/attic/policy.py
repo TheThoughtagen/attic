@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import Pane
 from .store import Config, PaneState
@@ -27,7 +27,10 @@ Action = Archive | Skip
 
 
 def iso(dt: datetime) -> str:
-    return dt.isoformat().replace("+00:00", "Z")
+    """Serialize as UTC ISO-8601 with a Z suffix, normalizing first so the
+    project-wide UTC contract is enforced here rather than trusted at every
+    call site. Three later modules import this."""
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse(ts: str) -> datetime:

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from attic.models import Pane
-from attic.policy import Archive, Skip, decide, update_state
+from attic.policy import Archive, Skip, decide, iso, update_state
 from attic.store import Config, PaneState
 
 NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
@@ -68,11 +68,16 @@ def test_vanished_panes_are_dropped_from_state():
 
 
 def test_recycled_pane_id_gets_a_fresh_clock():
-    # Same pane_id, different terminal_id => must not inherit the old clock.
-    prior = {"term_old": idle_since(10, revision=5)}
-    st = update_state([mkpane("w4:p2", terminal_id="term_new")], prior, NOW)
-    assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"
-    assert "term_old" not in st
+    """A closed pane's slot is reused: same pane_id, new terminal_id. If state were
+    keyed by pane_id, the new pane would inherit the dead one's idle clock and be
+    archived seconds after opening. The stale entry is deliberately keyed under the
+    PANE id and given a matching revision, so a pane_id-keyed implementation would
+    find it, judge the clock unchanged, and preserve the stale 02:00 timestamp."""
+    prior = {"w4:p2": idle_since(10, revision=5)}
+    pane = mkpane("w4:p2", terminal_id="term_new", revision=5)
+    st = update_state([pane], prior, NOW)
+    assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"   # fresh, not 02:00
+    assert "w4:p2" not in st
 
 
 # --- decide ---------------------------------------------------------------
@@ -154,6 +159,12 @@ def test_decide_returns_verdicts_in_input_order():
         st[p.terminal_id] = idle_since(hours)
     actions = decide(panes, st, NOW, CFG)
     assert [a.pane.pane_id for a in actions] == ["w1:p0", "w1:p1", "w1:p2"]
+
+
+def test_iso_normalizes_non_utc_input_to_z():
+    """iso() enforces the UTC contract itself rather than trusting call sites."""
+    mst = timezone(timedelta(hours=-6))
+    assert iso(datetime(2026, 8, 13, 6, 0, 0, tzinfo=mst)) == "2026-08-13T12:00:00Z"
 
 
 def test_every_pane_receives_a_verdict():
