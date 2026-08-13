@@ -14,9 +14,20 @@ from .store import AtticHome
 
 
 def append_inventory(
-    home: AtticHome, panes: list[Pane], labels: dict[str, str], now: datetime
+    home: AtticHome,
+    panes: list[Pane],
+    labels: dict[str, str],
+    now: datetime,
+    verdicts: dict[str, tuple[str, str]] | None = None,
 ) -> Path:
+    """Append one line recording every pane and what was decided about it.
+
+    Archives are logged in index.jsonl, but skips were previously persisted
+    nowhere — so "why wasn't that reaped?" had no answer. Entries written before
+    this change lack the fields; readers tolerate their absence.
+    """
     home.ensure()
+    verdicts = verdicts or {}
     entry = {
         "at": iso(now),
         "panes": [
@@ -27,6 +38,8 @@ def append_inventory(
                 "title": p.title,
                 "status": p.agent_status,
                 "session_uuid": p.session_uuid,
+                "verdict": verdicts.get(p.pane_id, (None, None))[0],
+                "reason": verdicts.get(p.pane_id, (None, None))[1],
             }
             for p in panes
         ],

@@ -67,6 +67,16 @@ def test_pause_file_blocks_reaping_but_not_inventory(tmp_path):
     assert (home.inventory_dir / "2026-08-13.jsonl").exists()
 
 
+def test_inventory_is_written_even_when_reaping_is_paused(tmp_path):
+    """Snapshotting is observation, not action — the pause guard must not skip it."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    run_tick(home, FakeHerdrClient(panes=[pane]), NOW)
+    line = json.loads((home.inventory_dir / "2026-08-13.jsonl").read_text(encoding="utf-8").strip())
+    assert line["panes"][0]["verdict"] == "skip"
+
+
 def test_dry_run_shows_verdicts_even_while_paused(tmp_path):
     """The soak depends on this. `attic` installs PAUSED, and the user reads
     `attic reap --dry-run` for days before granting reaping authority by removing

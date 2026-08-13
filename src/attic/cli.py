@@ -82,7 +82,6 @@ def run_tick(
         log.error("herdr unavailable, skipping tick: %s", exc)
         return TickResult(reason=f"herdr unavailable: {exc}")
 
-    append_inventory(home, panes, labels, now)
     for path in prune_inventory(home, now, config.inventory_retention_days):
         log.info("pruned inventory %s", path.name)
     for path in prune_archives(home, now, config.archive_retention_days):
@@ -113,6 +112,15 @@ def run_tick(
                 blocked = f"protocol mismatch: {protocol} != {config.herdr_protocol}"
 
     actions = _gate_on_resumability(decide(panes, state, now, config), projects_root)
+
+    # Inventory is written after decide() so it can record WHY each pane was
+    # skipped, but it is still unconditional: snapshotting is pure observation
+    # and must not be gated on whether reaping is permitted.
+    verdicts = {
+        a.pane.pane_id: (("archive", "") if isinstance(a, Archive) else ("skip", a.reason))
+        for a in actions
+    }
+    append_inventory(home, panes, labels, now, verdicts)
 
     if dry_run:
         return TickResult(actions=actions, reason=blocked or "dry-run")

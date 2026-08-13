@@ -19,6 +19,7 @@ def test_inventory_line_records_every_pane(tmp_path):
     assert entry["panes"][0] == {
         "pane_id": "w4:p2", "workspace": "wh dev", "cwd": "/tmp/repo",
         "title": "Some task", "status": "idle", "session_uuid": "u-1",
+        "verdict": None, "reason": None,
     }
 
 
@@ -110,6 +111,26 @@ def test_malformed_manifest_within_retention_is_spared(tmp_path):
     (d / "manifest.json").write_text("[]", encoding="utf-8")
     assert prune_archives(home, NOW, retention_days=30) == []
     assert d.exists()
+
+
+def test_inventory_records_the_verdict_and_reason(tmp_path):
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    verdicts = {"w4:p2": ("skip", "pinned")}
+    path = append_inventory(home, [pane], {}, NOW, verdicts)
+    entry = json.loads(path.read_text(encoding="utf-8").strip())["panes"][0]
+    assert entry["verdict"] == "skip"
+    assert entry["reason"] == "pinned"
+
+
+def test_verdicts_are_optional_so_old_callers_still_work(tmp_path):
+    home = AtticHome(tmp_path)
+    home.ensure()
+    path = append_inventory(home, [mkpane("w4:p2")], {}, NOW)
+    entry = json.loads(path.read_text(encoding="utf-8").strip())["panes"][0]
+    assert entry["verdict"] is None
+    assert entry["reason"] is None
 
 
 def test_prune_reclaims_manifest_less_dirs_past_retention(tmp_path):
