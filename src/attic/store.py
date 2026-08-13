@@ -53,7 +53,7 @@ class AtticHome:
     def load_config(self) -> Config:
         known = {f.name for f in fields(Config)}
         try:
-            raw = json.loads(self.config_path.read_text())
+            raw = json.loads(self.config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return Config()
         if not isinstance(raw, dict):
@@ -62,7 +62,7 @@ class AtticHome:
 
     def load_state(self) -> dict[str, PaneState]:
         try:
-            raw = json.loads(self.state_path.read_text())
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         if not isinstance(raw, dict):
@@ -91,7 +91,7 @@ class AtticHome:
             for k, v in state.items()
         }
         tmp = self.state_path.with_suffix(".json.tmp")
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
