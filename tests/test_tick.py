@@ -1,7 +1,9 @@
 import json
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
-from attic.cli import run_tick
+from attic.archive import Archiver
+from attic.cli import _print_verdicts, main, run_tick
 from attic.store import AtticHome, PaneState
 from fakes import FakeHerdrClient
 from test_policy import mkpane
@@ -131,6 +133,42 @@ def test_close_failure_keeps_archive_and_marks_it(tmp_path):
     run_tick(home, client, NOW)
     entry = json.loads(home.index_path.read_text().strip())
     assert entry["close_failed"] is True
+    assert next(home.archive_dir.glob("2026*")).exists()
+
+
+def test_dry_run_output_states_why_reaping_is_disabled(capsys, tmp_path):
+    """The soak has the user reading this for days while attic is PAUSED. Without
+    the banner, a paused run looks identical to a run with nothing to do."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    result = run_tick(home, FakeHerdrClient(panes=[pane]), NOW, dry_run=True)
+    _print_verdicts(result)
+    out = capsys.readouterr().out
+    assert "reaping disabled: paused" in out
+    assert "ARCHIVE" in out
+
+
+def test_main_returns_zero_when_setup_itself_fails(monkeypatch, capsys):
+    """A crashing timer stops protecting the user, and under launchd the crash
+    produces no visible symptom. Even an unwritable ATTIC_HOME must exit 0."""
+    def boom():
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr("attic.cli.AtticHome.default", staticmethod(boom))
+    assert main(["tick"]) == 0
+
+
+def test_index_append_failure_after_close_does_not_propagate(tmp_path):
+    """The archive and manifest are already durable and `attic list` reads manifests
+    from disk, so the session stays restorable; only the index loses an entry."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    client = FakeHerdrClient(panes=[pane])
+    with mock.patch.object(Archiver, "append_index", side_effect=OSError(28, "No space")):
+        result = run_tick(home, client, NOW)
+    assert result.reaped is True
+    assert client.closed == ["w4:p2"]
     assert next(home.archive_dir.glob("2026*")).exists()
 
 

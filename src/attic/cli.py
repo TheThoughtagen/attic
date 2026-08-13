@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .archive import Archiver
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
-from .policy import Action, Archive, Skip, decide, update_state
+from .policy import Action, Archive, decide, update_state
 from .store import AtticHome
 
 log = logging.getLogger("attic")
@@ -110,7 +111,14 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
             "archived_at": now.isoformat().replace("+00:00", "Z"),
             "close_failed": close_failed,
         }
-        archiver.append_index(entry)
+        try:
+            archiver.append_index(entry)
+        except OSError as exc:
+            # The archive directory and its manifest are already durable, and
+            # `attic list` reads manifests from disk rather than this index, so the
+            # session stays discoverable and restorable. Only the append-only log
+            # loses this entry and its close_failed marker.
+            log.error("archived %s but index append failed: %s", pane.pane_id, exc)
         archived.append(path.name)
         log.info("archived %s as %s", pane.pane_id, path.name)
 
@@ -118,6 +126,10 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
 
 
 def _print_verdicts(result: TickResult) -> None:
+    # The soak has the user reading this output for days while attic is PAUSED.
+    # Without this banner a paused run looks identical to a run with nothing to do.
+    if result.reason and result.reason != "dry-run":
+        print(f"reaping disabled: {result.reason} — showing what would happen anyway\n")
     for action in result.actions:
         if isinstance(action, Archive):
             print(f"ARCHIVE  {action.pane.pane_id:<8} {action.pane.title}")
@@ -133,14 +145,25 @@ def main(argv: list[str] | None = None) -> int:
     reap.add_argument("--dry-run", action="store_true", help="print verdicts, change nothing")
 
     args = parser.parse_args(argv)
-    home = AtticHome.default()
-    _setup_logging(home)
+
+    try:
+        home = AtticHome.default()
+        _setup_logging(home)
+    except Exception:
+        # Logging is not up yet, so stderr is the only channel available. Still
+        # return 0: a crashing timer stops protecting the user, and under launchd
+        # the crash itself produces no visible symptom.
+        traceback.print_exc(file=sys.stderr)
+        return 0
+
     now = datetime.now(timezone.utc)
 
     try:
         if args.command == "tick":
             result = run_tick(home, HerdrClient(), now)
-            print(f"archived {len(result.archived)} pane(s); {result.reason}")
+            summary = f"archived {len(result.archived)} pane(s); {result.reason}"
+            log.info(summary)          # launchd stdout may go nowhere; the log file persists
+            print(summary)
         elif args.command == "reap":
             result = run_tick(home, HerdrClient(), now, dry_run=args.dry_run)
             _print_verdicts(result)
