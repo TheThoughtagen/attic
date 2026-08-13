@@ -137,8 +137,23 @@ def test_per_tick_cap_archives_longest_idle_first():
         panes.append(p)
         st[p.terminal_id] = idle_since(hours)
     actions = decide(panes, st, NOW, CFG)
-    assert archived(actions) == ["w1:p4", "w1:p1", "w1:p2"]   # 30h, 20h, 9h
-    assert skip_reason(actions, "w1:p3") == "per-tick cap reached"
+    # Selection is the safety property: the three longest-idle, not the first three seen.
+    assert set(archived(actions)) == {"w1:p4", "w1:p1", "w1:p2"}   # 30h, 20h, 9h
+    # With a 4h threshold all five are eligible, so BOTH shorter ones are capped.
+    assert skip_reason(actions, "w1:p3") == "per-tick cap reached"   # 6h
+    assert skip_reason(actions, "w1:p0") == "per-tick cap reached"   # 5h
+
+
+def test_decide_returns_verdicts_in_input_order():
+    """Output order is presentation, not policy: `attic reap --dry-run` prints one
+    line per pane and must read in pane order for the operator's soak review."""
+    panes, st = [], {}
+    for i, hours in enumerate([5, 20, 9]):
+        p = mkpane(f"w1:p{i}")
+        panes.append(p)
+        st[p.terminal_id] = idle_since(hours)
+    actions = decide(panes, st, NOW, CFG)
+    assert [a.pane.pane_id for a in actions] == ["w1:p0", "w1:p1", "w1:p2"]
 
 
 def test_every_pane_receives_a_verdict():

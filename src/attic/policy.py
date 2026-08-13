@@ -73,7 +73,7 @@ def _verdict(pane: Pane, state: dict[str, PaneState], now, config) -> Skip | dat
 def decide(
     panes: list[Pane], state: dict[str, PaneState], now: datetime, config: Config
 ) -> list[Action]:
-    """Return one verdict per pane: Archives first (oldest idle first), then Skips."""
+    """Return one verdict per pane, preserving input order."""
     verdicts: dict[str, Skip | datetime] = {
         p.pane_id: _verdict(p, state, now, config) for p in panes
     }
@@ -81,19 +81,15 @@ def decide(
         (p for p in panes if isinstance(verdicts[p.pane_id], datetime)),
         key=lambda p: verdicts[p.pane_id],           # oldest idle first
     )
-    approved = eligible[: config.per_tick_cap]
-    approved_ids = {p.pane_id for p in approved}
+    approved = {p.pane_id for p in eligible[: config.per_tick_cap]}
 
-    # Archives come first, in oldest-idle-first order, so callers that care about
-    # reap priority (and the archived() test helper) see it directly. The rest
-    # follow in original pane order; their relative order carries no meaning.
-    actions: list[Action] = [Archive(p, verdicts[p.pane_id]) for p in approved]
+    actions: list[Action] = []
     for pane in panes:
-        if pane.pane_id in approved_ids:
-            continue
         v = verdicts[pane.pane_id]
         if isinstance(v, Skip):
             actions.append(v)
+        elif pane.pane_id in approved:
+            actions.append(Archive(pane, v))
         else:
             actions.append(Skip(pane, "per-tick cap reached"))
     return actions
