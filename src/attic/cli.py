@@ -13,6 +13,8 @@ from pathlib import Path
 
 from .archive import Archiver
 from .catalog import format_list, load_manifests, resolve_id
+from .duration import parse_duration
+from .exempt import resolve_terminal_id, set_pinned, set_snooze
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
 from .policy import Action, Archive, Skip, decide, iso, update_state
@@ -182,6 +184,15 @@ def main(argv: list[str] | None = None) -> int:
     restore_p = sub.add_parser("restore", help="reopen an archived session")
     restore_p.add_argument("archive_id")
 
+    for verb, helptext in (("pin", "never reap this pane"),
+                           ("unpin", "allow this pane to be reaped again"),
+                           ("unsnooze", "clear this pane's snooze")):
+        parser_ = sub.add_parser(verb, help=helptext)
+        parser_.add_argument("identifier", help="pane id (w4:p2) or terminal id")
+    snooze_p = sub.add_parser("snooze", help="protect this pane until a deadline")
+    snooze_p.add_argument("identifier", help="pane id (w4:p2) or terminal id")
+    snooze_p.add_argument("duration", help="30m, 4h, 2d")
+
     args = parser.parse_args(argv)
 
     try:
@@ -241,6 +252,38 @@ def main(argv: list[str] | None = None) -> int:
                 print(str(exc), file=sys.stderr)
                 return 1
             print(f"restored {manifest['id']} into {pane_id}")
+        elif args.command in ("pin", "unpin", "snooze", "unsnooze"):
+            try:
+                panes = HerdrClient().pane_list()
+                terminal_id = resolve_terminal_id(panes, args.identifier)
+            except (HerdrError, LookupError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+
+            if args.command in ("pin", "unpin"):
+                set_pinned(home, terminal_id, args.command == "pin")
+                print(f"{args.command}ned {args.identifier} ({terminal_id})")
+                return 0
+
+            if args.command == "unsnooze":
+                set_snooze(home, terminal_id, None)
+                print(f"snooze cleared for {args.identifier}")
+                return 0
+
+            try:
+                delta = parse_duration(args.duration)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            until = now + delta
+            previous = set_snooze(home, terminal_id, until)
+            message = f"snoozed until {iso(until)}"
+            if previous:
+                message += f" (was {previous})"
+            print(message)
+            if home.load_state()[terminal_id].pinned:
+                print("note: pane is pinned; snooze applies only after unpin")
+            return 0
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)
         return 0 if args.command in ("tick", "reap") else 1
