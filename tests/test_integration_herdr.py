@@ -32,7 +32,10 @@ def test_pane_list_shape_is_still_what_we_parse(client):
     assert panes, "expected at least one live pane"
     for p in panes:
         assert p.pane_id and p.terminal_id
-        assert p.agent_status in {"idle", "working", "blocked", "unknown"}
+        assert p.agent_status in {"idle", "working", "blocked", "done", "unknown"}, (
+            f"unknown agent_status {p.agent_status!r} — herdr added a state; "
+            "check whether policy.decide() should treat it as reapable"
+        )
 
 
 def test_agent_panes_expose_session_uuids(client):
