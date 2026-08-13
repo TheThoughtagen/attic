@@ -27,9 +27,17 @@ Action = Archive | Skip
 
 
 def iso(dt: datetime) -> str:
-    """Serialize as UTC ISO-8601 with a Z suffix, normalizing first so the
-    project-wide UTC contract is enforced here rather than trusted at every
-    call site. Three later modules import this."""
+    """Serialize as UTC ISO-8601 with a Z suffix, enforcing the project-wide UTC
+    contract here rather than trusting every call site. Three later modules import this.
+
+    Naive datetimes are rejected rather than guessed at: astimezone() would read them
+    as system local time, shifting first_idle_at by the local UTC offset (six hours
+    in the author's zone). A fast idle clock against a four-hour threshold archives
+    panes that are not eligible — the exact false positive this project exists to
+    prevent. Raising aborts the tick and archives nothing, which is the safe direction.
+    """
+    if dt.tzinfo is None:
+        raise ValueError("iso() requires a timezone-aware datetime")
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 

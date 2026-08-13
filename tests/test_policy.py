@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from attic.models import Pane
 from attic.policy import Archive, Skip, decide, iso, update_state
 from attic.store import Config, PaneState
@@ -165,6 +167,13 @@ def test_iso_normalizes_non_utc_input_to_z():
     """iso() enforces the UTC contract itself rather than trusting call sites."""
     mst = timezone(timedelta(hours=-6))
     assert iso(datetime(2026, 8, 13, 6, 0, 0, tzinfo=mst)) == "2026-08-13T12:00:00Z"
+
+
+def test_iso_rejects_naive_datetime():
+    """A naive datetime would be read as system local time, shifting the idle clock
+    by the local UTC offset and archiving panes that are not eligible. Fail loudly."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        iso(datetime(2026, 8, 13, 12, 0, 0))
 
 
 def test_every_pane_receives_a_verdict():
