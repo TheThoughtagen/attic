@@ -1134,6 +1134,7 @@ class FakeHerdrClient:
         self.fail_read: set[str] = set()
         self.fail_close: set[str] = set()
         self.empty_read: set[str] = set()
+        self.fail_run: bool = False
         # Observations:
         self.closed: list[str] = []
         self.reads: list[tuple[str, int]] = []
@@ -1171,6 +1172,8 @@ class FakeHerdrClient:
         return self.next_pane_id
 
     def pane_run(self, pane_id: str, command: list[str]) -> None:
+        if self.fail_run:
+            raise HerdrError(f"simulated run failure for {pane_id}")
         self.ran.append((pane_id, command))
 ```
 
@@ -2460,6 +2463,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from attic.cli import main
+from attic.herdr import HerdrError
 from attic.restore import restore
 from attic.store import AtticHome
 from fakes import FakeHerdrClient
@@ -2526,6 +2531,37 @@ def test_restore_is_non_destructive_and_logs_restored_at(tmp_path):
     assert entry["id"] == "20260812T000000Z-debug"
 
 
+def test_restore_names_the_pane_when_the_session_fails_to_start(tmp_path):
+    """A tab exists but nothing runs in it. The error must name the pane, or the user
+    is left with a stray tab they cannot account for and no sign a restore failed."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    client = FakeHerdrClient()
+    client.fail_run = True
+    with pytest.raises(HerdrError, match="w9:p9"):
+        restore(home, client, manifest(str(tmp_path)), NOW)
+    assert client.created_tabs                 # the tab really does exist
+    assert not home.index_path.exists()        # but nothing claims it was restored
+
+
+def test_restore_prints_the_manifest_when_cwd_is_gone(monkeypatch, capsys, tmp_path):
+    """Aborting is right, but the user needs to see WHAT was abandoned — especially
+    the resume string, which lets them recover by hand if the directory merely moved."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    data = {"id": "20260812T000000Z-x", "title": "T", "cwd": "/nonexistent/path",
+            "session_uuid": "u-1", "archived_at": "2026-08-12T00:00:00Z",
+            "resume": "cd /nonexistent/path && claude --resume u-1"}
+    d = home.archive_dir / data["id"]
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv("ATTIC_HOME", str(tmp_path))
+    assert main(["restore", "20260812T000000Z-x"]) == 0
+    err = capsys.readouterr().err
+    assert "cwd no longer exists" in err
+    assert "u-1" in err            # the manifest itself was shown, not just the message
+
+
 def test_restore_twice_yields_two_panes(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -2553,6 +2589,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .archive import Archiver
+from .herdr import HerdrError
 from .policy import iso
 from .store import AtticHome
 
@@ -2575,7 +2612,14 @@ def restore(home: AtticHome, client, manifest: dict, now: datetime) -> str:
     if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
         # Manifest predates resume_argv, or the field is corrupt.
         argv = ["claude", "--resume", manifest["session_uuid"]]
-    client.pane_run(pane_id, argv)
+    try:
+        client.pane_run(pane_id, argv)
+    except HerdrError as exc:
+        # The tab exists but nothing is running in it. Name the pane, or the user is
+        # left with a stray tab they cannot account for and no idea a restore failed.
+        raise HerdrError(
+            f"opened tab {pane_id} but could not start the session: {exc}"
+        ) from exc
 
     Archiver(home, client).append_index({
         "id": manifest["id"],
@@ -2604,8 +2648,22 @@ Add to the dispatch chain:
 
 ```python
         elif args.command == "restore":
-            manifest = resolve_id(home, args.archive_id)
-            pane_id = restore_archive(home, HerdrClient(), manifest, now)
+            try:
+                manifest = resolve_id(home, args.archive_id)
+            except LookupError as exc:
+                print(str(exc), file=sys.stderr)
+                return 0
+            try:
+                pane_id = restore_archive(home, HerdrClient(), manifest, now)
+            except FileNotFoundError as exc:
+                # Show WHAT is being abandoned. The resume string in particular lets
+                # the user recover by hand if the directory merely moved.
+                print(str(exc), file=sys.stderr)
+                print(json.dumps(manifest, indent=2), file=sys.stderr)
+                return 0
+            except HerdrError as exc:
+                print(str(exc), file=sys.stderr)
+                return 0
             print(f"restored {manifest['id']} into {pane_id}")
 ```
 
