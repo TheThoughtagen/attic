@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,10 @@ def _write_fsynced(path: Path, text: str) -> None:
     # default encoding under the timer differs from the one in your shell. Guessing
     # wrong raises UnicodeEncodeError, and every archive silently fails forever.
     with open(path, "w", encoding="utf-8") as fh:
+        # Tighten before any content lands. Scrollback captures whatever was on a
+        # developer's screen — echoed tokens, .env dumps, connection strings — so
+        # these files are owner-only, not default-umask world-readable.
+        os.chmod(path, 0o600)
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
@@ -81,8 +86,11 @@ class Archiver:
             "resume": f"cd {pane.cwd} && claude --resume {pane.session_uuid}",
         }
 
+        created = False
         try:
             path.mkdir(parents=True)
+            os.chmod(path, 0o700)   # owner-only: this directory holds raw scrollback
+            created = True
             _write_fsynced(path / "scrollback.txt", scrollback)
             _write_fsynced(path / "manifest.json", json.dumps(manifest, indent=2))
             dir_fd = os.open(path, os.O_RDONLY)
@@ -91,12 +99,20 @@ class Archiver:
             finally:
                 os.close(dir_fd)
         except OSError:
+            # A partial archive (scrollback written, manifest not) is invisible to
+            # `attic list` AND immune to prune_archives — both skip manifest-less
+            # directories — so it would accumulate forever in a tool whose job is
+            # reclaiming resources. Only remove a directory THIS call created; a
+            # FileExistsError means the directory was someone else's.
+            if created:
+                shutil.rmtree(path, ignore_errors=True)
             return None
         return path
 
     def append_index(self, entry: dict) -> None:
         self.home.ensure()
         with open(self.home.index_path, "a", encoding="utf-8") as fh:
+            os.chmod(self.home.index_path, 0o600)
             fh.write(json.dumps(entry) + "\n")
             fh.flush()
             os.fsync(fh.fileno())

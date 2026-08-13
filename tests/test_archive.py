@@ -1,5 +1,8 @@
+import builtins
 import json
+import stat
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from attic.archive import Archiver, make_archive_id, slugify
 from attic.policy import Archive
@@ -41,6 +44,17 @@ def test_archive_id_disambiguates_collisions():
     assert make_archive_id(NOW, "Some Task", existing) == "20260813T154700Z-some-task-2"
 
 
+def test_archive_is_owner_readable_only(tmp_path):
+    """Scrollback captures whatever was on screen — echoed tokens, .env dumps,
+    connection strings. Default umask would make it world-readable."""
+    home, client, action = setup(tmp_path)
+    path = Archiver(home, client).archive(action, "wh dev", NOW)
+    assert path is not None
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    assert stat.S_IMODE((path / "scrollback.txt").stat().st_mode) == 0o600
+    assert stat.S_IMODE((path / "manifest.json").stat().st_mode) == 0o600
+
+
 def test_archive_writes_scrollback_and_manifest(tmp_path):
     home, client, action = setup(tmp_path)
     path = Archiver(home, client).archive(action, "wh dev", NOW)
@@ -76,6 +90,27 @@ def test_empty_read_is_treated_as_failure(tmp_path):
     home, client, action = setup(tmp_path)
     client.empty_read.add("w4:p2")
     assert Archiver(home, client).archive(action, "wh dev", NOW) is None
+    # Same assertion as the failed-read sibling: a regression that moved the empty
+    # check after the first write would otherwise slip through.
+    assert list(home.archive_dir.glob("2026*")) == []
+    assert client.closed == []
+
+
+def test_manifest_write_failure_leaves_no_orphan_directory(tmp_path):
+    """Scrollback written, manifest not: the pane correctly survives, but without
+    cleanup the directory is invisible to `attic list` AND immune to prune_archives
+    (both skip manifest-less dirs), so it would accumulate forever."""
+    home, client, action = setup(tmp_path)
+    real_open = builtins.open
+
+    def flaky_open(path, *a, **k):
+        if str(path).endswith("manifest.json"):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **k)
+
+    with mock.patch("attic.archive.open", flaky_open, create=True):
+        assert Archiver(home, client).archive(action, "wh dev", NOW) is None
+    assert list(home.archive_dir.iterdir()) == []
     assert client.closed == []
 
 

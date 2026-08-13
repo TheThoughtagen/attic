@@ -41,8 +41,11 @@ class AtticHome:
         return cls(Path(env) if env else Path.home() / ".attic")
 
     def ensure(self) -> None:
+        # 0700 throughout: archives hold raw terminal scrollback and the inventory
+        # records every repo path you had open. Owner-only, not default umask.
         for d in (self.root, self.inventory_dir, self.archive_dir, self.log_path.parent):
             d.mkdir(parents=True, exist_ok=True)
+            os.chmod(d, 0o700)
 
     def is_paused(self) -> bool:
         return self.pause_path.exists()
