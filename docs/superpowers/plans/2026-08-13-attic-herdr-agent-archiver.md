@@ -408,8 +408,11 @@ class AtticHome:
         return cls(Path(env) if env else Path.home() / ".attic")
 
     def ensure(self) -> None:
+        # 0700 throughout: archives hold raw terminal scrollback and the inventory
+        # records every repo path you had open. Owner-only, not default umask.
         for d in (self.root, self.inventory_dir, self.archive_dir, self.log_path.parent):
             d.mkdir(parents=True, exist_ok=True)
+            os.chmod(d, 0o700)
 
     def is_paused(self) -> bool:
         return self.pause_path.exists()
@@ -1202,8 +1205,11 @@ failed read never results in a close.
 Create `tests/test_archive.py`:
 
 ```python
+import builtins
 import json
+import stat
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from attic.archive import Archiver, make_archive_id, slugify
 from attic.policy import Archive
@@ -1245,6 +1251,17 @@ def test_archive_id_disambiguates_collisions():
     assert make_archive_id(NOW, "Some Task", existing) == "20260813T154700Z-some-task-2"
 
 
+def test_archive_is_owner_readable_only(tmp_path):
+    """Scrollback captures whatever was on screen — echoed tokens, .env dumps,
+    connection strings. Default umask would make it world-readable."""
+    home, client, action = setup(tmp_path)
+    path = Archiver(home, client).archive(action, "wh dev", NOW)
+    assert path is not None
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    assert stat.S_IMODE((path / "scrollback.txt").stat().st_mode) == 0o600
+    assert stat.S_IMODE((path / "manifest.json").stat().st_mode) == 0o600
+
+
 def test_archive_writes_scrollback_and_manifest(tmp_path):
     home, client, action = setup(tmp_path)
     path = Archiver(home, client).archive(action, "wh dev", NOW)
@@ -1280,6 +1297,27 @@ def test_empty_read_is_treated_as_failure(tmp_path):
     home, client, action = setup(tmp_path)
     client.empty_read.add("w4:p2")
     assert Archiver(home, client).archive(action, "wh dev", NOW) is None
+    # Same assertion as the failed-read sibling: a regression that moved the empty
+    # check after the first write would otherwise slip through.
+    assert list(home.archive_dir.glob("2026*")) == []
+    assert client.closed == []
+
+
+def test_manifest_write_failure_leaves_no_orphan_directory(tmp_path):
+    """Scrollback written, manifest not: the pane correctly survives, but without
+    cleanup the directory is invisible to `attic list` AND immune to prune_archives
+    (both skip manifest-less dirs), so it would accumulate forever."""
+    home, client, action = setup(tmp_path)
+    real_open = builtins.open
+
+    def flaky_open(path, *a, **k):
+        if str(path).endswith("manifest.json"):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **k)
+
+    with mock.patch("attic.archive.open", flaky_open, create=True):
+        assert Archiver(home, client).archive(action, "wh dev", NOW) is None
+    assert list(home.archive_dir.iterdir()) == []
     assert client.closed == []
 
 
@@ -1339,6 +1377,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -1370,6 +1409,10 @@ def _write_fsynced(path: Path, text: str) -> None:
     # default encoding under the timer differs from the one in your shell. Guessing
     # wrong raises UnicodeEncodeError, and every archive silently fails forever.
     with open(path, "w", encoding="utf-8") as fh:
+        # Tighten before any content lands. Scrollback captures whatever was on a
+        # developer's screen — echoed tokens, .env dumps, connection strings — so
+        # these files are owner-only, not default-umask world-readable.
+        os.chmod(path, 0o600)
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
@@ -1414,8 +1457,11 @@ class Archiver:
             "resume": f"cd {pane.cwd} && claude --resume {pane.session_uuid}",
         }
 
+        created = False
         try:
             path.mkdir(parents=True)
+            os.chmod(path, 0o700)   # owner-only: this directory holds raw scrollback
+            created = True
             _write_fsynced(path / "scrollback.txt", scrollback)
             _write_fsynced(path / "manifest.json", json.dumps(manifest, indent=2))
             dir_fd = os.open(path, os.O_RDONLY)
@@ -1424,12 +1470,20 @@ class Archiver:
             finally:
                 os.close(dir_fd)
         except OSError:
+            # A partial archive (scrollback written, manifest not) is invisible to
+            # `attic list` AND immune to prune_archives — both skip manifest-less
+            # directories — so it would accumulate forever in a tool whose job is
+            # reclaiming resources. Only remove a directory THIS call created; a
+            # FileExistsError means the directory was someone else's.
+            if created:
+                shutil.rmtree(path, ignore_errors=True)
             return None
         return path
 
     def append_index(self, entry: dict) -> None:
         self.home.ensure()
         with open(self.home.index_path, "a", encoding="utf-8") as fh:
+            os.chmod(self.home.index_path, 0o600)
             fh.write(json.dumps(entry) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -1464,7 +1518,8 @@ Create `tests/test_inventory.py`:
 
 ```python
 import json
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 
 from attic.inventory import append_inventory, prune_archives, prune_inventory
 from attic.store import AtticHome
@@ -1529,11 +1584,31 @@ def test_prune_archives_uses_manifest_archived_at(tmp_path):
     assert fresh.exists()
 
 
-def test_prune_archives_skips_dirs_without_manifest(tmp_path):
+def test_prune_archives_spares_recent_dirs_without_manifest(tmp_path):
+    """A freshly-created manifest-less dir may be an in-flight write. Never touch it."""
     home = AtticHome(tmp_path)
     home.ensure()
     (home.archive_dir / "20260101T000000Z-broken").mkdir()
     assert prune_archives(home, NOW, retention_days=1) == []
+    assert (home.archive_dir / "20260101T000000Z-broken").exists()
+
+
+def test_prune_reclaims_manifest_less_dirs_past_retention(tmp_path):
+    """Orphaned partial archives are invisible to `attic list`, so without this they
+    would be immortal — accumulating forever in a tool built to reclaim resources."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    old = home.archive_dir / "20260101T000000Z-orphan"
+    old.mkdir()
+    (old / "scrollback.txt").write_text("partial write, no manifest\n", encoding="utf-8")
+    os.utime(old, (0, (NOW - timedelta(days=200)).timestamp()))
+    fresh = home.archive_dir / "20260812T000000Z-orphan"
+    fresh.mkdir()
+    (fresh / "scrollback.txt").write_text("partial write, no manifest\n", encoding="utf-8")
+    removed = prune_archives(home, NOW, retention_days=30)
+    assert [p.name for p in removed] == ["20260101T000000Z-orphan"]
+    assert not old.exists()
+    assert fresh.exists()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1614,6 +1689,17 @@ def prune_archives(home: AtticHome, now: datetime, retention_days: int) -> list[
             data = json.loads(manifest.read_text())
             archived_at = datetime.fromisoformat(data["archived_at"].replace("Z", "+00:00"))
         except (OSError, ValueError, KeyError):
+            # No readable manifest: such a directory is invisible to `attic list`
+            # and would otherwise be immortal. Reclaim it, but only once its mtime
+            # is past retention — nothing legitimate is manifest-less and 30 days
+            # old, and the age bar guarantees an in-flight write is never touched.
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+                removed.append(path)
             continue
         if archived_at < cutoff:
             shutil.rmtree(path)
