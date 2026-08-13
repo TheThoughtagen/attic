@@ -53,6 +53,46 @@ def test_pause_file_blocks_reaping_but_not_inventory(tmp_path):
     assert (home.inventory_dir / "2026-08-13.jsonl").exists()
 
 
+def test_dry_run_shows_verdicts_even_while_paused(tmp_path):
+    """The soak depends on this. `attic` installs PAUSED, and the user reads
+    `attic reap --dry-run` for days before granting reaping authority by removing
+    PAUSE. If the pause guard short-circuited before decide(), that output would be
+    empty and the entire trust-building procedure would be impossible to perform."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    client = FakeHerdrClient(panes=[pane])
+    result = run_tick(home, client, NOW, dry_run=True)
+    assert len(result.actions) == 1
+    assert result.reason == "paused"
+    assert client.closed == []
+    assert list(home.archive_dir.glob("2026*")) == []
+
+
+def test_paused_tick_still_reports_what_it_would_have_done(tmp_path):
+    """A paused tick computes verdicts so the log can say what it declined to do."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    client = FakeHerdrClient(panes=[pane])
+    result = run_tick(home, client, NOW)
+    assert result.reaped is False
+    assert result.reason == "paused"
+    assert len(result.actions) == 1
+    assert client.closed == []
+
+
+def test_idle_clock_advances_while_paused(tmp_path):
+    """Guards gate execution, never observation. If the clock froze during a pause,
+    dry-run durations during the soak would bear no relation to reality."""
+    pane = mkpane("w4:p2")
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.pause_path.touch()
+    run_tick(home, FakeHerdrClient(panes=[pane]), NOW)
+    assert home.load_state()[pane.terminal_id].first_idle_at == "2026-08-13T15:47:00Z"
+
+
 def test_protocol_mismatch_blocks_reaping(tmp_path):
     pane = mkpane("w4:p2")
     home = home_with_clock(tmp_path, [pane])

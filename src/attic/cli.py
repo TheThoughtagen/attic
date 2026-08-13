@@ -55,23 +55,34 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
     state = update_state(panes, home.load_state(), now)
     home.save_state(state)
 
+    # Determine whether reaping is permitted, but do NOT return yet: verdicts are
+    # computed either way. `attic` installs PAUSED and the soak procedure is "read
+    # `attic reap --dry-run` for days, then grant authority by removing PAUSE" — so
+    # short-circuiting before decide() would make that output empty and the whole
+    # trust-building step impossible.
+    blocked: str | None = None
     if home.is_paused():
-        log.info("PAUSE present, reaping disabled")
-        return TickResult(reason="paused")
-
-    try:
-        protocol = client.protocol()
-    except HerdrError as exc:
-        return TickResult(reason=f"herdr protocol unreadable: {exc}")
-    if protocol != config.herdr_protocol:
-        log.warning(
-            "herdr protocol %s != pinned %s, reaping disabled", protocol, config.herdr_protocol
-        )
-        return TickResult(reason=f"protocol mismatch: {protocol} != {config.herdr_protocol}")
+        blocked = "paused"
+    else:
+        try:
+            protocol = client.protocol()
+        except HerdrError as exc:
+            blocked = f"herdr protocol unreadable: {exc}"
+        else:
+            if protocol != config.herdr_protocol:
+                log.warning(
+                    "herdr protocol %s != pinned %s, reaping disabled",
+                    protocol, config.herdr_protocol,
+                )
+                blocked = f"protocol mismatch: {protocol} != {config.herdr_protocol}"
 
     actions = decide(panes, state, now, config)
+
     if dry_run:
-        return TickResult(actions=actions, reason="dry-run")
+        return TickResult(actions=actions, reason=blocked or "dry-run")
+    if blocked:
+        log.info("reaping disabled: %s", blocked)
+        return TickResult(actions=actions, reason=blocked)
 
     archiver = Archiver(home, client)
     archived: list[str] = []
