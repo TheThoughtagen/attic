@@ -1,0 +1,87 @@
+"""Filesystem layout, configuration, and idle-state persistence."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, fields
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Config:
+    idle_threshold_hours: float = 4.0
+    per_tick_cap: int = 3
+    archive_retention_days: int = 30
+    inventory_retention_days: int = 90
+    herdr_protocol: int = 19
+
+
+@dataclass
+class PaneState:
+    first_idle_at: str | None
+    last_revision: int
+
+
+class AtticHome:
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+        self.config_path = self.root / "config.json"
+        self.state_path = self.root / "state.json"
+        self.pause_path = self.root / "PAUSE"
+        self.inventory_dir = self.root / "inventory"
+        self.archive_dir = self.root / "archive"
+        self.index_path = self.archive_dir / "index.jsonl"
+        self.log_path = self.root / "logs" / "attic.log"
+        self.legacy_dir = self.root / "legacy"
+
+    @classmethod
+    def default(cls) -> "AtticHome":
+        env = os.environ.get("ATTIC_HOME")
+        return cls(Path(env) if env else Path.home() / ".attic")
+
+    def ensure(self) -> None:
+        for d in (self.root, self.inventory_dir, self.archive_dir, self.log_path.parent):
+            d.mkdir(parents=True, exist_ok=True)
+
+    def is_paused(self) -> bool:
+        return self.pause_path.exists()
+
+    def load_config(self) -> Config:
+        known = {f.name for f in fields(Config)}
+        try:
+            raw = json.loads(self.config_path.read_text())
+        except (OSError, ValueError):
+            return Config()
+        if not isinstance(raw, dict):
+            return Config()
+        return Config(**{k: v for k, v in raw.items() if k in known})
+
+    def load_state(self) -> dict[str, PaneState]:
+        try:
+            raw = json.loads(self.state_path.read_text())
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, PaneState] = {}
+        for key, val in raw.items():
+            if isinstance(val, dict):
+                out[key] = PaneState(
+                    first_idle_at=val.get("first_idle_at"),
+                    last_revision=int(val.get("last_revision", 0)),
+                )
+        return out
+
+    def save_state(self, state: dict[str, PaneState]) -> None:
+        self.ensure()
+        payload = {
+            k: {"first_idle_at": v.first_idle_at, "last_revision": v.last_revision}
+            for k, v in state.items()
+        }
+        tmp = self.state_path.with_suffix(".json.tmp")
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.state_path)
