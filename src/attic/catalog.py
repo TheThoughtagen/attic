@@ -27,11 +27,28 @@ def load_manifests(home: AtticHome) -> list[dict]:
             continue
         data.setdefault("id", path.name)
         out.append(data)
-    return sorted(out, key=lambda m: m.get("archived_at", ""), reverse=True)
+    return sorted(out, key=_sort_key, reverse=True)
+
+
+def _sort_key(manifest: dict) -> str:
+    """Sort by archived_at, tolerating entries where it is absent or not a string.
+
+    A bare .get(default) is NOT enough: the default only applies when the key is
+    missing. A null or numeric value compares against the other entries' strings and
+    raises TypeError inside sorted(), which main() swallows — so `attic list` would
+    print nothing and exit 0, hiding EVERY archive rather than the one corrupt entry.
+    This is the recovery path; it must degrade per-record, never wholesale.
+    """
+    stamp = manifest.get("archived_at")
+    return stamp if isinstance(stamp, str) else ""
 
 
 def resolve_id(home: AtticHome, prefix: str) -> dict:
-    matches = [m for m in load_manifests(home) if m["id"].startswith(prefix)]
+    manifests = load_manifests(home)
+    for manifest in manifests:
+        if manifest["id"] == prefix:  # a complete ID is never ambiguous
+            return manifest
+    matches = [m for m in manifests if m["id"].startswith(prefix)]
     if not matches:
         raise LookupError(f"no archive matching {prefix!r}")
     if len(matches) > 1:

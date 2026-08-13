@@ -60,3 +60,21 @@ def test_format_list_includes_id_and_title(tmp_path):
 
 def test_format_list_handles_empty_attic():
     assert "no archives" in format_list([]).lower()
+
+
+def test_list_survives_a_manifest_with_a_null_timestamp(tmp_path):
+    home = AtticHome(tmp_path)
+    home.ensure()
+    make_archive(home, "20260812T000000Z-good", "Good", "2026-08-12T00:00:00Z")
+    make_archive(home, "20260813T000000Z-bad", "Bad", None)
+    titles = [m["title"] for m in load_manifests(home)]
+    assert "Good" in titles
+    assert "Bad" in titles
+
+
+def test_exact_id_wins_over_a_longer_prefix_match(tmp_path):
+    home = AtticHome(tmp_path)
+    home.ensure()
+    make_archive(home, "20260812T000000Z-a", "A", "2026-08-12T00:00:00Z")
+    make_archive(home, "20260812T000000Z-ab", "AB", "2026-08-12T00:00:01Z")
+    assert resolve_id(home, "20260812T000000Z-a")["title"] == "A"

@@ -184,7 +184,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(manifest, indent=2))
             print("\n--- scrollback ---\n")
             scrollback = home.archive_dir / manifest["id"] / "scrollback.txt"
-            print(scrollback.read_text(encoding="utf-8"))
+            try:
+                print(scrollback.read_text(encoding="utf-8"))
+            except OSError as exc:
+                # A partial archive still has a usable manifest and resume command.
+                print(f"(scrollback unavailable: {exc})", file=sys.stderr)
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)
     return 0
