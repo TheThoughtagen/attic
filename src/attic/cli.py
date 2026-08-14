@@ -175,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     snooze_p = sub.add_parser("snooze", help="protect this pane until a deadline")
     snooze_p.add_argument("identifier", help="pane id (w4:p2) or terminal id")
     snooze_p.add_argument("duration", help="30m, 4h, 2d")
+    sub.add_parser("ui", help="open the control surface")
 
     args = parser.parse_args(argv)
 
@@ -266,6 +267,14 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
             if home.load_state()[terminal_id].pinned:
                 print("note: pane is pinned; snooze applies only after unpin")
+            return 0
+        elif args.command == "ui":
+            try:
+                from .tui.app import AtticApp
+            except ImportError:
+                print("attic ui needs the tui extra: uv sync --extra tui", file=sys.stderr)
+                return 1
+            AtticApp(home, HerdrClient()).run()
             return 0
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)
