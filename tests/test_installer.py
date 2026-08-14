@@ -12,6 +12,7 @@ can assert the properties whose absence caused real breakage.
 
 import plistlib
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -66,7 +67,9 @@ def test_install_pauses_before_loading_the_agent():
 
 def test_install_sh_is_syntactically_valid():
     """A shell syntax error surfaces only when someone runs it."""
-    proc = subprocess.run(["bash", "-n", str(INSTALL)], capture_output=True, text=True)
+    bash = shutil.which("bash") or "/bin/bash"
+    proc = subprocess.run([bash, "-n", str(INSTALL)],  # noqa: S603 — argv is fixed
+                          capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
 
 
