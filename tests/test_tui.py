@@ -455,3 +455,20 @@ async def test_a_blank_title_falls_back_to_a_dash(tmp_path):
         await pilot.press("i")
         await pilot.pause()
         assert "summary   —" in str(app.query_one("#detail").render())
+
+
+async def test_a_blank_title_shows_a_dash_in_the_table_too(tmp_path):
+    """Table and panel must agree for the same pane."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    pane = type(pane)(**{**pane.__dict__, "title": "   "})
+    app = AtticApp(home, FakeHerdrClient(panes=[pane]), projects_root=tmp_path / "projects")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        cols = [str(c.label) for c in table.columns.values()]
+        assert str(table.get_row_at(0)[cols.index("summary")]) == "—"
+        await pilot.press("i")
+        await pilot.pause()
+        assert "summary   —" in str(app.query_one("#detail").render())

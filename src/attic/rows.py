@@ -109,7 +109,10 @@ def fleet_rows(evaluation: Evaluation, now: datetime, projects_root=None) -> lis
                 verdict="archive" if archiving else "skip",
                 reason="" if archiving else getattr(action, "reason", ""),
                 terminal_id=pane.terminal_id,
-                summary=ellipsize(pane.title, SUMMARY_WIDTH),
+                # Fallback lives here, not in the widget: the table and the
+                # detail panel must not disagree about what a blank title looks
+                # like, and "   " is truthy so `title or "—"` renders empty.
+                summary=ellipsize(pane.title, SUMMARY_WIDTH) or "—",
                 size=human_bytes(transcript_size(pane, projects_root)),
                 repo=(info.name if (info := repo_info(pane.cwd)) else "—"),
                 cwd=pane.cwd or "",

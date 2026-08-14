@@ -142,3 +142,15 @@ def test_fleet_rows_carry_the_pane_title_as_a_summary():
                     actions=[Skip(pane, "pinned")], config=Config())
     row = fleet_rows(ev, NOW)[0]
     assert row.summary == pane.title
+
+
+def test_a_blank_title_becomes_a_dash_in_the_fleet_row():
+    """The table and the detail panel must agree. A whitespace-only title is
+    truthy, so the naive fallback rendered an empty cell in one and a dash in
+    the other for the same pane."""
+    for blank in ("", "   ", "\t\n"):
+        pane = mkpane("w1:p1")
+        pane = type(pane)(**{**pane.__dict__, "title": blank})
+        ev = Evaluation(panes=[pane], state={}, labels={},
+                        actions=[Skip(pane, "pinned")], config=Config())
+        assert fleet_rows(ev, NOW)[0].summary == "—"
