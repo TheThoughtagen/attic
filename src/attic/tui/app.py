@@ -74,8 +74,11 @@ class AtticApp(App):
             now = datetime.now(timezone.utc)
             ev = evaluate(self.home, self.client, now, self.projects_root)
             self.last_error = None
+            self.sub_title = ""
         except Exception as exc:            # herdr down, malformed payload, etc.
             self.last_error = str(exc)
+            self.sub_title = f"stale — {exc}"
+            self.notify(str(exc), severity="error")
             return
 
         fleet = self.query_one("#fleet-table", DataTable)
