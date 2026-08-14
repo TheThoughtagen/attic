@@ -11,13 +11,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Input, Static, TabbedContent, TabPane
 from textual.widgets.data_table import RowDoesNotExist
 
 from ..evaluate import evaluate
 from ..rows import activity_rows, attic_rows, fleet_rows
+from ..session import human_bytes, repo_info, session_detail, transcript_size
 from ..store import AtticHome
 from .motions import MotionState
 
@@ -38,6 +40,7 @@ class AtticApp(App):
         Binding("ctrl+f", "page_down", "page down", show=False),
         Binding("ctrl+b", "page_up", "page up", show=False),
         Binding("R", "force_refresh", "refresh"),
+        Binding("i", "toggle_detail", "detail"),
         Binding("q", "quit", "quit"),
         Binding(":", "open_command", "command"),
     ]
@@ -52,6 +55,8 @@ class AtticApp(App):
         # Captured at `:`-open time, not read again at Enter — see action_open_command.
         self._command_row_key: str | None = None
         self._command_tab: str | None = None
+        self.show_detail = False
+        self._panes: list = []
 
     def compose(self) -> ComposeResult:
         with TabbedContent(initial="fleet"):
@@ -61,16 +66,19 @@ class AtticApp(App):
                 yield DataTable(id="activity-table", cursor_type="row")
             with TabPane("Attic", id="attic"):
                 yield DataTable(id="attic-table", cursor_type="row")
+        yield Static(id="detail")
         yield Input(id="command", placeholder=":")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#fleet-table", DataTable).add_columns(
-            "pane", "workspace", "status", "idle", "verdict", "reason")
+            "pane", "repo", "status", "idle", "size", "verdict", "reason")
         self.query_one("#activity-table", DataTable).add_columns(
             "at", "pane", "title", "verdict", "reason")
         self.query_one("#attic-table", DataTable).add_columns(
             "id", "archived", "workspace", "title")
+        detail = self.query_one("#detail", Static)
+        detail.display = False
         cmd = self.query_one("#command", Input)
         cmd.display = False
         # AUTO_FOCUS resolves during Screen._compose(), BEFORE on_mount runs — so a
@@ -89,6 +97,7 @@ class AtticApp(App):
         try:
             now = datetime.now(UTC)
             ev = evaluate(self.home, self.client, now, self.projects_root)
+            self._panes = ev.panes
             self.last_error = None
             self.sub_title = ""
         except Exception as exc:  # noqa: BLE001 — herdr down, malformed payload, etc.
@@ -100,10 +109,12 @@ class AtticApp(App):
         fleet = self.query_one("#fleet-table", DataTable)
         selected = self._selected_key(fleet)
         fleet.clear()
-        for row in fleet_rows(ev, now):
-            fleet.add_row(row.pane_id, row.workspace, row.status,
-                          row.idle_for, row.verdict, row.reason, key=row.pane_id)
+        for row in fleet_rows(ev, now, self.projects_root):
+            fleet.add_row(row.pane_id, row.repo + ("*" if row.is_worktree else ""),
+                          row.status, row.idle_for, row.size,
+                          row.verdict, row.reason, key=row.pane_id)
         self._restore_selection(fleet, selected)
+        self._render_detail()
 
         activity = self.query_one("#activity-table", DataTable)
         activity.clear()
@@ -146,6 +157,76 @@ class AtticApp(App):
             table.move_cursor(row=table.get_row_index(key))
         except RowDoesNotExist:
             pass    # that row is gone (pane closed) — leave the cursor where it landed
+
+    def on_tabbed_content_tab_activated(self, event) -> None:
+        """Switching tabs changes what the panel should say.
+
+        Third instance of the same shape: the panel is correct only when every
+        way the selection can change tells it so. Refresh, row highlight and
+        tab activation are the three, and each was missed in turn.
+        """
+        self._render_detail()
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        """Keep the panel on the highlighted row.
+
+        Refreshing it only on the 2s timer left the panel describing one pane
+        while the cursor sat on another for up to two seconds — the same
+        display-disagrees-with-selection failure the command line was fixed for.
+        Handling the table's own message covers every way the cursor moves:
+        j/k, gg/G, ctrl+d/u, page keys, and mouse.
+        """
+        self._render_detail()
+
+    def action_toggle_detail(self) -> None:
+        """Show or hide the detail panel. Reads nothing and mutates nothing —
+        the single-keystroke safety rule still holds."""
+        self.show_detail = not self.show_detail
+        self.query_one("#detail", Static).display = self.show_detail
+        self._render_detail()
+
+    def _render_detail(self) -> None:
+        """Fill the panel for the selected pane.
+
+        Only runs while the panel is open, and only for one pane: session_detail
+        reads the transcript, and these run to 32 MB. It caches on mtime, so
+        holding the panel open across refreshes costs one read per session.
+        """
+        if not self.show_detail:
+            return
+        panel = self.query_one("#detail", Static)
+        if self.query_one(TabbedContent).active != "fleet":
+            panel.update("detail is available on the Fleet tab")
+            return
+        key = self._selected_key(self.query_one("#fleet-table", DataTable))
+        pane = next((p for p in self._panes if p.pane_id == key), None)
+        if pane is None:
+            panel.update("no pane selected")
+            return
+
+        info = repo_info(pane.cwd)
+        where = pane.cwd or "—"
+        repo = "—"
+        if info:
+            repo = info.name
+            if info.is_worktree:
+                repo += f"  (worktree: {info.worktree_branch})"
+        size = human_bytes(transcript_size(pane, self.projects_root))
+        det = session_detail(pane, self.projects_root)
+        msgs = f"{det.messages:,} messages" if det else "transcript not written yet"
+        ask = (det.last_prompt if det and det.last_prompt else "—")
+
+        # Every interpolated value is escaped: these are pane titles, paths and
+        # your own prompts, and Textual reads [...] as markup. An unmatched tag
+        # like "[/tmp/x]" raises MarkupError straight into a message handler,
+        # and "[b]" silently swallows the text around it.
+        panel.update(
+            f"[b]{escape(pane.pane_id)}[/b]  {escape(pane.title or '')}\n"
+            f"dir       {escape(where)}\n"
+            f"repo      {escape(repo)}\n"
+            f"session   {escape(size)} · {escape(msgs)}\n"
+            f"last ask  {escape(ask[:160])}"
+        )
 
     def _table(self) -> DataTable:
         pane = self.query_one(TabbedContent).active
