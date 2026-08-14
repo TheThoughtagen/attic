@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from ..archive import Archiver
 from ..catalog import resolve_id
 from ..duration import parse_duration
+from ..evaluate import archive_and_close
 from ..exempt import resolve_terminal_id, set_pinned, set_snooze
 from ..policy import Archive, iso
 from ..resumable import resume_blocker
@@ -52,9 +52,9 @@ def parse_command(text: str) -> tuple[str, list[str]]:
     return verb, args
 
 
-def _pane_for(ctx: CommandContext):
-    for pane in ctx.client.pane_list():
-        if pane.pane_id == ctx.row_key:
+def _pane_for(panes, row_key: str | None):
+    for pane in panes:
+        if pane.pane_id == row_key:
             return pane
     return None
 
@@ -80,10 +80,13 @@ def run_command(verb: str, args: list[str], ctx: CommandContext) -> CommandResul
             return CommandResult(False, str(exc))
         return CommandResult(True, f"restored into {pane_id}")
 
-    pane = _pane_for(ctx)
+    # One snapshot for this whole command: pane_list() is a live herdr call, and
+    # calling it twice risks two different answers if a pane vanishes in between.
+    panes = ctx.client.pane_list()
+    pane = _pane_for(panes, ctx.row_key)
     if pane is None:
         return CommandResult(False, f"no live pane {ctx.row_key}")
-    terminal_id = resolve_terminal_id(ctx.client.pane_list(), pane.pane_id)
+    terminal_id = resolve_terminal_id(panes, pane.pane_id)
 
     if verb in ("pin", "unpin"):
         set_pinned(ctx.home, terminal_id, verb == "pin")
@@ -113,8 +116,6 @@ def run_command(verb: str, args: list[str], ctx: CommandContext) -> CommandResul
     if blocker is not None:
         return CommandResult(False, f"refusing: {blocker}")
     label = ctx.client.workspace_labels().get(pane.workspace_id, pane.workspace_id)
-    path = Archiver(ctx.home, ctx.client).archive(Archive(pane, ctx.now), label, ctx.now)
-    if path is None:
-        return CommandResult(False, "archive failed; pane left alive")
-    ctx.client.pane_close(pane.pane_id)
-    return CommandResult(True, f"archived {pane.pane_id} as {path.name}")
+    archive_id, message = archive_and_close(ctx.home, ctx.client, Archive(pane, ctx.now),
+                                             label, ctx.now)
+    return CommandResult(archive_id is not None, message)

@@ -11,10 +11,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .archive import Archiver
 from .catalog import format_list, load_manifests, resolve_id
 from .duration import parse_duration
-from .evaluate import evaluate
+from .evaluate import archive_and_close, evaluate
 from .exempt import resolve_terminal_id, set_pinned, set_snooze
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
@@ -103,42 +102,18 @@ def run_tick(
         log.info("reaping disabled: %s", blocked)
         return TickResult(actions=actions, reason=blocked)
 
-    archiver = Archiver(home, client)
     archived: list[str] = []
     for action in actions:
         if not isinstance(action, Archive):
             continue
         pane = action.pane
         label = labels.get(pane.workspace_id, pane.workspace_id)
-        path = archiver.archive(action, label, now)
-        if path is None:
+        archive_id, message = archive_and_close(home, client, action, label, now)
+        if archive_id is None:
             log.warning("archive failed for %s, leaving it alive", pane.pane_id)
             continue
-        close_failed = False
-        try:
-            client.pane_close(pane.pane_id)
-        except HerdrError as exc:
-            close_failed = True
-            log.error("archived %s but close failed: %s", pane.pane_id, exc)
-        entry = {
-            "id": path.name,
-            "pane_id": pane.pane_id,
-            "title": pane.title,
-            "cwd": pane.cwd,
-            "session_uuid": pane.session_uuid,
-            "archived_at": iso(now),
-            "close_failed": close_failed,
-        }
-        try:
-            archiver.append_index(entry)
-        except OSError as exc:
-            # The archive directory and its manifest are already durable, and
-            # `attic list` reads manifests from disk rather than this index, so the
-            # session stays discoverable and restorable. Only the append-only log
-            # loses this entry and its close_failed marker.
-            log.error("archived %s but index append failed: %s", pane.pane_id, exc)
-        archived.append(path.name)
-        log.info("archived %s as %s", pane.pane_id, path.name)
+        archived.append(archive_id)
+        log.info(message)
 
     return TickResult(actions=actions, archived=archived, reaped=True, reason="ok")
 
@@ -272,7 +247,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 from .tui.app import AtticApp
             except ImportError:
-                print("attic ui needs the tui extra: uv sync --extra tui", file=sys.stderr)
+                print("attic ui needs textual: 'uv sync --extra tui' in a checkout, "
+                      "or reinstall with './install.sh'", file=sys.stderr)
                 return 1
             AtticApp(home, HerdrClient()).run()
             return 0

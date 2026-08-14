@@ -6,6 +6,10 @@ from the tick path (see tests/test_daemon_purity.py).
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("textual")
+
 from fakes import FakeHerdrClient
 
 from attic.herdr import HerdrError

@@ -10,7 +10,7 @@ PLIST="$HOME/Library/LaunchAgents/com.you.attic.plist"
 mkdir -p "$HOME/.attic/logs" "$HOME/Library/LaunchAgents"
 cp "$REPO/launchd/com.you.attic.plist" "$PLIST"
 
-uv tool install --editable "$REPO"
+uv tool install --editable --with textual "$REPO"
 
 # Start paused. Reaping is enabled only after the soak in the README.
 touch "$HOME/.attic/PAUSE"

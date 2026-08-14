@@ -58,6 +58,55 @@ UUID, unfocused, with an unchanged revision counter, idle for 4+ hours. At most 
 a clean transcript. The conversation itself is recovered by `claude --resume`, which is
 what the manifest's `resume` command does.
 
+## `attic ui` — the control surface
+
+```bash
+attic ui        # needs the tui extra installed (see below)
+```
+
+A three-tab Textual dashboard — Fleet, Activity, Attic — read from the same evaluation
+pipeline as `attic tick`, so what the UI shows and what the reaper will do can't diverge.
+
+**Vim motions** (never mutate anything — they only move the cursor or switch tabs):
+
+| Key | Effect |
+|---|---|
+| `j` / `k` | cursor down / up |
+| `ctrl+d` / `ctrl+u` | half page down / up |
+| `ctrl+f` / `ctrl+b` | page down / up |
+| `gg` / `G` | jump to top / bottom |
+| `gt` / `gT` | next / previous tab |
+| `1gt`, `2gt`, `3gt` | jump to a specific tab |
+| `R` | force an immediate refresh |
+| `q` | quit |
+
+**Mutations require typing a `:` command** — pinning, snoozing, archiving, and restoring
+never happen on a bare keystroke, deliberately, the same way vim needs `:` before anything
+destructive:
+
+| Command | Tab | Effect |
+|---|---|---|
+| `:pin` | Fleet | never reap the selected pane |
+| `:unpin` | Fleet | allow the selected pane to be reaped again |
+| `:snooze <duration>` | Fleet | protect the selected pane until a deadline, e.g. `:snooze 4h` |
+| `:unsnooze` | Fleet | clear the selected pane's snooze |
+| `:archive` | Fleet | archive and close the selected pane now, skipping the idle threshold |
+| `:restore` | Attic | reopen the selected archived session |
+| `:help` | any | list available commands |
+| `:q` / `:quit` | any | quit |
+
+The command line captures its target — the selected row — the moment it opens, not when
+you press Enter, so the 2-second background refresh can never retarget a command you're
+still typing.
+
+### As a herdr plugin
+
+`herdr-plugin.toml` exposes `attic ui` as a pane (`control`) and adds `pin`/`snooze`
+context actions on any pane, so pinning or snoozing a session doesn't require switching
+to the attic tab at all. Install by linking the plugin per herdr's plugin docs; every
+command it runs goes through `uv run --extra tui --project .`, so it needs no separate
+environment setup beyond what `./install.sh` or `uv sync --extra tui` already provides.
+
 ## Configuration
 
 `~/.attic/config.json`, all keys optional:

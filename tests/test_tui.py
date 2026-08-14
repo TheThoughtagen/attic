@@ -1,5 +1,7 @@
 import pytest
 
+pytest.importorskip("textual")
+
 from attic.store import AtticHome
 from attic.tui.app import AtticApp
 from fakes import FakeHerdrClient
@@ -55,10 +57,15 @@ async def test_gt_switches_tabs(tmp_path):
 async def test_no_single_keystroke_mutates_state(tmp_path):
     """The safety model: mutations require typing a : command. If any bare key
     pins, snoozes, archives or closes, that model is broken."""
+    import string
+
     app = app_for(tmp_path)
+    # Derived, not hardcoded: a future single-letter mutating Binding is
+    # automatically covered rather than silently missed by a stale key list.
+    bound = {b.key for b in AtticApp.BINDINGS if len(b.key) == 1}
     async with app.run_test() as pilot:
         await pilot.pause()
-        for key in "abcdefhilmnopqrstuvwxyzADPRSXZ":
+        for key in sorted(set(string.ascii_letters) | bound):
             if key == "q":
                 continue                     # quit is allowed and would end the app
             await pilot.press(key)
@@ -119,3 +126,73 @@ async def test_selection_survives_rows_being_reordered(tmp_path):
         app.refresh_data()
         await pilot.pause()
         assert table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value == chosen
+
+
+async def test_a_refresh_while_typing_cannot_retarget_the_command(tmp_path):
+    """The Critical: a 2s timer must not redirect `:pin` onto a pane the user
+    did not select. This asserts the command acts on the row chosen at `:`-time,
+    even though refresh_data() is suspended while the command line is open — the
+    timer firing mid-typing must not silently retarget or silently do nothing
+    wrong either."""
+    app = app_for_many(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        await pilot.press("j")
+        chosen = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        await pilot.press(":")
+        app.refresh_data()                      # the timer fires mid-typing
+        await pilot.pause()
+        await pilot.press("p", "i", "n", "enter")
+        await pilot.pause()
+        pinned = [k for k, v in app.home.load_state().items() if v.pinned]
+        assert pinned == [f"term_{chosen}"]
+
+
+async def test_captured_target_survives_the_row_disappearing(tmp_path):
+    """Isolates C1(a) specifically. With the command line open, refresh_data()
+    is suspended (C1(b)), so this test bypasses that guard directly and
+    repopulates the table itself — simulating what a future regression that
+    removes the C1(b) guard would let through — to prove the row-key captured
+    at `:`-open time, not the cursor read at Enter, is what decides the target.
+    Without that capture, a vanished row's slot would be filled by whatever
+    pane now sorts into it, and the command would silently act on that pane
+    instead of refusing."""
+    app = app_for_many(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        await pilot.press("j")
+        chosen = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        await pilot.press(":")
+        app.client.panes = [p for p in app.client.panes if p.pane_id != chosen]
+        table.clear()
+        for pane in app.client.panes:
+            table.add_row(pane.pane_id, "", "", "", "", "", key=pane.pane_id)
+        table.move_cursor(row=0)
+        await pilot.press("p", "i", "n", "enter")
+        await pilot.pause()
+        # The vanished pane must be refused, not silently swapped for row 0's pane.
+        assert app.home.load_state() == {}
+
+
+async def test_herdr_dying_mid_command_does_not_crash_the_tui(tmp_path):
+    """run_command's pane_list() call can raise HerdrError — on_input_submitted
+    must catch it the same way refresh_data already catches herdr failures,
+    rather than letting it propagate and kill the app."""
+    from attic.herdr import HerdrError
+
+    class Dead:
+        def pane_list(self):
+            raise HerdrError("socket gone")
+
+    app = app_for(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.client = Dead()
+        await pilot.press("j")
+        await pilot.press(":")
+        await pilot.press("p", "i", "n", "enter")
+        await pilot.pause()
+        assert app.is_running
+        assert app.home.load_state() == {}

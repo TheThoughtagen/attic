@@ -13,14 +13,19 @@ tool would change what it does.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .archive import Archiver
+from .herdr import HerdrError
 from .models import Pane
-from .policy import Action, Archive, Skip, decide, update_state
+from .policy import Action, Archive, Skip, decide, iso, update_state
 from .resumable import resume_blocker
 from .store import AtticHome, PaneState
+
+log = logging.getLogger("attic")
 
 
 @dataclass(frozen=True)
@@ -68,3 +73,38 @@ def evaluate(
     state = update_state(panes, home.load_state(), now)
     actions = gate_on_resumability(decide(panes, state, now, config), projects_root)
     return Evaluation(panes=panes, state=state, actions=actions, labels=labels)
+
+
+def archive_and_close(home: AtticHome, client, action: Archive, label: str,
+                       now: datetime) -> tuple[str | None, str]:
+    """Archive a pane, close it, and record the result. Returns (archive_id, message).
+
+    Shared by run_tick and the TUI's :archive so the two cannot diverge — the
+    execution half of the same guarantee evaluate() provides for decisions.
+    A None archive_id means nothing was closed.
+    """
+    archiver = Archiver(home, client)
+    path = archiver.archive(action, label, now)
+    if path is None:
+        return None, "archive failed; pane left alive"
+    pane = action.pane
+    close_failed = False
+    try:
+        client.pane_close(pane.pane_id)
+    except HerdrError as exc:
+        close_failed = True
+        log.error("archived %s but close failed: %s", pane.pane_id, exc)
+    try:
+        archiver.append_index({
+            "id": path.name, "pane_id": pane.pane_id,
+            "title": pane.title, "cwd": pane.cwd,
+            "session_uuid": pane.session_uuid,
+            "archived_at": iso(now), "close_failed": close_failed,
+        })
+    except OSError as exc:
+        # The archive directory and its manifest are already durable, and
+        # `attic list` reads manifests from disk rather than this index, so the
+        # session stays discoverable and restorable. Only the append-only log
+        # loses this entry and its close_failed marker.
+        log.error("archived %s but index append failed: %s", pane.pane_id, exc)
+    return path.name, f"archived {pane.pane_id} as {path.name}"

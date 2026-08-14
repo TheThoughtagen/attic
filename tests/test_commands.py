@@ -1,13 +1,24 @@
+import json
 from datetime import datetime, timezone
 
 import pytest
 
+from attic.resumable import session_path
 from attic.store import AtticHome
 from attic.tui.commands import CommandContext, parse_command, run_command
 from fakes import FakeHerdrClient
 from test_policy import mkpane
 
 NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+
+
+def make_resumable(root, panes):
+    """The resumability gate requires a Claude transcript on disk."""
+    for pane in panes:
+        path = session_path(pane.cwd, pane.session_uuid, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"type":"user"}\n', encoding="utf-8")
+    return root
 
 
 def ctx(tmp_path, tab="fleet", row_key="w4:p2", panes=None):
@@ -75,3 +86,18 @@ def test_a_command_with_no_selected_row_fails_cleanly(tmp_path):
     result = run_command("pin", [], ctx(tmp_path, row_key=None))
     assert not result.ok
     assert "no row" in result.message
+
+
+def test_archive_via_the_tui_leaves_an_index_entry(tmp_path):
+    """run_tick and the TUI's :archive share archive_and_close precisely so this
+    can't drift — a TUI archive with no index entry would leave no audit trail
+    and no close_failed marker, unlike every archive the daemon performs."""
+    pane = mkpane("w4:p2")
+    c = ctx(tmp_path, panes=[pane])
+    make_resumable(tmp_path / "projects", [pane])
+    result = run_command("archive", [], c)
+    assert result.ok
+    assert c.client.closed == ["w4:p2"]
+    entry = json.loads(c.home.index_path.read_text().strip())
+    assert entry["pane_id"] == "w4:p2"
+    assert entry["close_failed"] is False

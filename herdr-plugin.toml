@@ -20,7 +20,7 @@ platforms = ["macos", "linux"]
 id = "control"
 title = "attic"
 placement = "tab"
-command = ["uv", "run", "--project", ".", "attic", "ui"]
+command = ["uv", "run", "--extra", "tui", "--project", ".", "attic", "ui"]
 
 # VERIFIED: an action receives NO argv — the probe printed `ARGV=` empty. The target
 # pane arrives only in HERDR_PLUGIN_CONTEXT_JSON as `focused_pane_id`, alongside
@@ -33,7 +33,7 @@ title = "attic: pin pane (never reap)"
 contexts = ["pane"]
 command = [
   "sh", "-c",
-  'exec uv run --project . attic pin "$(printf %s "$HERDR_PLUGIN_CONTEXT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[\"focused_pane_id\"])")"',
+  'exec uv run --extra tui --project . attic pin "$(printf %s "$HERDR_PLUGIN_CONTEXT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[\"focused_pane_id\"])")"',
 ]
 
 [[actions]]
@@ -42,5 +42,5 @@ title = "attic: snooze pane 4h"
 contexts = ["pane"]
 command = [
   "sh", "-c",
-  'exec uv run --project . attic snooze "$(printf %s "$HERDR_PLUGIN_CONTEXT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[\"focused_pane_id\"])")" 4h',
+  'exec uv run --extra tui --project . attic snooze "$(printf %s "$HERDR_PLUGIN_CONTEXT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[\"focused_pane_id\"])")" 4h',
 ]

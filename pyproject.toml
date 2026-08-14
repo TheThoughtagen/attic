@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-tui = ["textual>=0.80"]
+tui = ["textual>=8,<9"]
 
 [project.scripts]
 attic = "attic.cli:main"

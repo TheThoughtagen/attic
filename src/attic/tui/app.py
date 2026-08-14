@@ -47,6 +47,9 @@ class AtticApp(App):
         self.projects_root = projects_root
         self.last_error: str | None = None
         self.motions = MotionState()
+        # Captured at `:`-open time, not read again at Enter — see action_open_command.
+        self._command_row_key: str | None = None
+        self._command_tab: str | None = None
 
     def compose(self) -> ComposeResult:
         with TabbedContent(initial="fleet"):
@@ -79,6 +82,8 @@ class AtticApp(App):
     def refresh_data(self) -> None:
         """Re-read everything. Never writes state — watching the dashboard must
         not advance idle clocks or change what the timer does."""
+        if self.query_one("#command", Input).display:
+            return      # never move the ground under a command being typed
         try:
             now = datetime.now(timezone.utc)
             ev = evaluate(self.home, self.client, now, self.projects_root)
@@ -191,6 +196,11 @@ class AtticApp(App):
         event.stop()
 
     def action_open_command(self) -> None:
+        # Capture the target NOW. Reading the cursor at Enter means a refresh
+        # landing while the user types retargets the command onto another pane —
+        # and `:archive` closes a live session they did not select.
+        self._command_row_key = self._selected_key(self._table())
+        self._command_tab = self.query_one(TabbedContent).active
         box = self.query_one("#command", Input)
         box.can_focus = True
         box.display = True
@@ -213,14 +223,16 @@ class AtticApp(App):
         if verb in ("q", "quit"):
             self.exit()
             return
-        table = self._table()
-        row_key = None
-        if table.row_count and table.cursor_row is not None:
-            row_key = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
-        result = run_command(verb, args, CommandContext(
-            home=self.home, client=self.client,
-            tab=self.query_one(TabbedContent).active,
-            row_key=row_key, now=datetime.now(timezone.utc),
-            projects_root=self.projects_root))
+        row_key = self._command_row_key
+        tab = self._command_tab or self.query_one(TabbedContent).active
+        try:
+            result = run_command(verb, args, CommandContext(
+                home=self.home, client=self.client,
+                tab=tab,
+                row_key=row_key, now=datetime.now(timezone.utc),
+                projects_root=self.projects_root))
+        except Exception as exc:
+            self.notify(f"command failed: {exc}", severity="error")
+            return
         self.notify(result.message, severity="information" if result.ok else "error")
         self.refresh_data()

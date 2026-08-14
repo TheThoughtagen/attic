@@ -19,7 +19,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "textual", marker = "extra == 'tui'", specifier = ">=0.80" }]
+requires-dist = [{ name = "textual", marker = "extra == 'tui'", specifier = ">=8,<9" }]
 provides-extras = ["tui"]
 
 [package.metadata.requires-dev]
