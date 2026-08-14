@@ -87,7 +87,7 @@ class AtticApp(App):
 
     def on_mount(self) -> None:
         self.query_one("#fleet-table", DataTable).add_columns(
-            "pane", "repo", "status", "idle", "size", "verdict", "reason")
+            "pane", "summary", "repo", "status", "idle", "size", "verdict", "reason")
         self.query_one("#activity-table", DataTable).add_columns(
             "at", "pane", "title", "verdict", "reason")
         self.query_one("#attic-table", DataTable).add_columns(
@@ -125,7 +125,8 @@ class AtticApp(App):
         selected = self._selected_key(fleet)
         fleet.clear()
         for row in fleet_rows(ev, now, self.projects_root):
-            fleet.add_row(row.pane_id, row.repo + ("*" if row.is_worktree else ""),
+            fleet.add_row(row.pane_id, row.summary,
+                          row.repo + ("*" if row.is_worktree else ""),
                           row.status, row.idle_for, row.size,
                           row.verdict, row.reason, key=row.pane_id)
         self._restore_selection(fleet, selected)
@@ -236,7 +237,8 @@ class AtticApp(App):
         # like "[/tmp/x]" raises MarkupError straight into a message handler,
         # and "[b]" silently swallows the text around it.
         panel.update(
-            f"[b]{escape(pane.pane_id)}[/b]  {escape(pane.title or '')}\n"
+            f"[b]{escape(pane.pane_id)}[/b]\n"
+            f"summary   {escape(pane.title or '—')}\n"
             f"dir       {escape(where)}\n"
             f"repo      {escape(repo)}\n"
             f"session   {escape(size)} · {escape(msgs)}\n"
