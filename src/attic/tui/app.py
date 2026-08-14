@@ -14,6 +14,7 @@ from typing import ClassVar
 from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.widgets import DataTable, Footer, Input, Static, TabbedContent, TabPane
 from textual.widgets.data_table import RowDoesNotExist
 
@@ -29,7 +30,15 @@ REFRESH_SECONDS = 2.0
 class AtticApp(App):
     """Three views over attic's own policy functions, called in-process."""
 
-    CSS = "DataTable { height: 1fr; }"
+    CSS = """
+    DataTable { height: 1fr; }
+    /* Docked, not merely appended: TabbedContent expands to fill the screen, so
+       a sibling laid out after it lands past the bottom edge — rendered, sized,
+       and invisible. Docking reserves the rows first and shrinks the tab area. */
+    #bottom { dock: bottom; height: auto; }
+    #detail { height: auto; padding: 0 1; border-top: solid $panel; }
+    #command { height: auto; }
+    """
     TITLE = "attic"
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -66,9 +75,15 @@ class AtticApp(App):
                 yield DataTable(id="activity-table", cursor_type="row")
             with TabPane("Attic", id="attic"):
                 yield DataTable(id="attic-table", cursor_type="row")
-        yield Static(id="detail")
-        yield Input(id="command", placeholder=":")
-        yield Footer()
+        # One docked container, not two docked siblings: docking each of them
+        # separately made both claim the same rows and overlap.
+        # One docked container holding everything that lives at the bottom.
+        # Docking each separately made them all claim the same rows: the panel
+        # and command line rendered underneath the footer, off the visible area.
+        with Vertical(id="bottom"):
+            yield Static(id="detail")
+            yield Input(id="command", placeholder=":")
+            yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#fleet-table", DataTable).add_columns(
