@@ -66,7 +66,13 @@ class AtticApp(App):
             "at", "pane", "title", "verdict", "reason")
         self.query_one("#attic-table", DataTable).add_columns(
             "id", "archived", "workspace", "title")
-        self.query_one("#command", Input).display = False
+        cmd = self.query_one("#command", Input)
+        cmd.display = False
+        # AUTO_FOCUS resolves during Screen._compose(), BEFORE on_mount runs — so a
+        # focusable hidden Input wins the race and silently swallows every keystroke.
+        # Making it unfocusable while hidden removes the race rather than out-running it.
+        cmd.can_focus = False
+        self.set_focus(self.query_one("#fleet-table", DataTable))
         self.refresh_data()
         self.set_interval(REFRESH_SECONDS, self.refresh_data)
 
@@ -153,6 +159,7 @@ class AtticApp(App):
 
     def action_open_command(self) -> None:
         box = self.query_one("#command", Input)
+        box.can_focus = True
         box.display = True
         box.value = ":"
         box.focus()
@@ -161,9 +168,10 @@ class AtticApp(App):
         from ..tui.commands import CommandContext, parse_command, run_command
         box = self.query_one("#command", Input)
         box.display = False
+        box.can_focus = False
         text = event.value
         box.value = ""
-        self.set_focus(None)
+        self.set_focus(self._table())      # return focus to the table, not to nothing
         try:
             verb, args = parse_command(text)
         except ValueError as exc:
