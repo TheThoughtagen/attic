@@ -282,3 +282,64 @@ async def test_the_fleet_table_carries_size_and_repo(tmp_path):
         await pilot.pause()
         cols = [str(c.label) for c in app.query_one("#fleet-table").columns.values()]
         assert "size" in cols and "repo" in cols
+
+
+async def test_a_prompt_containing_brackets_does_not_break_the_panel(tmp_path):
+    """Textual reads [...] as markup. Real prompts in this fleet contain things
+    like "[Image #1]" and paths like "[/tmp/x]" — the latter raises MarkupError
+    straight into a message handler, and "[b]" silently swallows surrounding
+    text. The panel shows titles, paths and your own prompts, so all of it is
+    escaped and rendered literally."""
+    import json
+
+    from attic.resumable import session_path
+
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    root = tmp_path / "projects"
+    path = session_path(pane.cwd, pane.session_uuid, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    nasty = "check [/tmp/x] and [b]bold[/b] and [Image #1]"
+    path.write_text(
+        json.dumps({"type": "user", "message": {"role": "user"}}, separators=(",", ":"))
+        + "\n"
+        + json.dumps({"type": "last-prompt", "lastPrompt": nasty}, separators=(",", ":"))
+        + "\n", encoding="utf-8")
+
+    app = AtticApp(home, FakeHerdrClient(panes=[pane]), projects_root=root)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert app.is_running, "MarkupError killed the app"
+        shown = str(app.query_one("#detail").render())
+        assert "[/tmp/x]" in shown and "[b]bold[/b]" in shown and "[Image #1]" in shown
+
+
+async def test_the_size_column_and_the_panel_agree(tmp_path):
+    """Both must resolve transcripts from the same projects root, or the column
+    reads '—' while the panel reports a size for the same pane."""
+    import json
+
+    from attic.resumable import session_path
+
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    root = tmp_path / "projects"
+    path = session_path(pane.cwd, pane.session_uuid, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"type": "user", "message": {"role": "user"}}, separators=(",", ":"))
+        + "\n", encoding="utf-8")
+
+    app = AtticApp(home, FakeHerdrClient(panes=[pane]), projects_root=root)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        size_cell = str(table.get_row_at(0)[4])
+        assert size_cell != "—", "size column ignored projects_root"
+        await pilot.press("i")
+        await pilot.pause()
+        assert size_cell in str(app.query_one("#detail").render())

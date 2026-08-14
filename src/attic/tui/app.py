@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Input, Static, TabbedContent, TabPane
@@ -108,7 +109,7 @@ class AtticApp(App):
         fleet = self.query_one("#fleet-table", DataTable)
         selected = self._selected_key(fleet)
         fleet.clear()
-        for row in fleet_rows(ev, now):
+        for row in fleet_rows(ev, now, self.projects_root):
             fleet.add_row(row.pane_id, row.repo + ("*" if row.is_worktree else ""),
                           row.status, row.idle_for, row.size,
                           row.verdict, row.reason, key=row.pane_id)
@@ -206,12 +207,16 @@ class AtticApp(App):
         msgs = f"{det.messages:,} messages" if det else "transcript not written yet"
         ask = (det.last_prompt if det and det.last_prompt else "—")
 
+        # Every interpolated value is escaped: these are pane titles, paths and
+        # your own prompts, and Textual reads [...] as markup. An unmatched tag
+        # like "[/tmp/x]" raises MarkupError straight into a message handler,
+        # and "[b]" silently swallows the text around it.
         panel.update(
-            f"[b]{pane.pane_id}[/b]  {pane.title or ''}\n"
-            f"dir       {where}\n"
-            f"repo      {repo}\n"
-            f"session   {size} · {msgs}\n"
-            f"last ask  {ask[:160]}"
+            f"[b]{escape(pane.pane_id)}[/b]  {escape(pane.title or '')}\n"
+            f"dir       {escape(where)}\n"
+            f"repo      {escape(repo)}\n"
+            f"session   {escape(size)} · {escape(msgs)}\n"
+            f"last ask  {escape(ask[:160])}"
         )
 
     def _table(self) -> DataTable:
