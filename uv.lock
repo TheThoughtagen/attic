@@ -3,8 +3,7 @@ revision = 1
 requires-python = ">=3.11"
 
 [[package]]
-name = "attic"
-version = "0.1.0"
+name = "attic-herdr"
 source = { editable = "." }
 
 [package.optional-dependencies]
