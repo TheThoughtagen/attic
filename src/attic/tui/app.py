@@ -158,6 +158,15 @@ class AtticApp(App):
         except RowDoesNotExist:
             pass    # that row is gone (pane closed) — leave the cursor where it landed
 
+    def on_tabbed_content_tab_activated(self, event) -> None:
+        """Switching tabs changes what the panel should say.
+
+        Third instance of the same shape: the panel is correct only when every
+        way the selection can change tells it so. Refresh, row highlight and
+        tab activation are the three, and each was missed in turn.
+        """
+        self._render_detail()
+
     def on_data_table_row_highlighted(self, event) -> None:
         """Keep the panel on the highlighted row.
 

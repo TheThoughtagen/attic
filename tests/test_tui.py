@@ -343,3 +343,19 @@ async def test_the_size_column_and_the_panel_agree(tmp_path):
         await pilot.press("i")
         await pilot.pause()
         assert size_cell in str(app.query_one("#detail").render())
+
+
+async def test_the_panel_updates_when_the_tab_changes(tmp_path):
+    """The panel is Fleet-only. Switching away must say so immediately, not
+    leave a stale pane description until the next 2s refresh."""
+    app = app_for(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        assert "dir" in str(app.query_one("#detail").render())
+        await pilot.press("g", "t")            # -> activity
+        await pilot.pause()
+        assert "Fleet tab" in str(app.query_one("#detail").render())
+        await pilot.press("g", "T")            # back to fleet
+        await pilot.pause()
+        assert "dir" in str(app.query_one("#detail").render())
