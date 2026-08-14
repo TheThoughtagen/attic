@@ -11,14 +11,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .archive import Archiver
 from .catalog import format_list, load_manifests, resolve_id
 from .duration import parse_duration
+from .evaluate import archive_and_close, evaluate
 from .exempt import resolve_terminal_id, set_pinned, set_snooze
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
-from .policy import Action, Archive, Skip, decide, iso, update_state
-from .resumable import resume_blocker
+from .policy import Action, Archive, iso
 from .restore import restore as restore_archive
 from .store import AtticHome
 
@@ -42,28 +41,6 @@ def _setup_logging(home: AtticHome) -> None:
     )
 
 
-def _gate_on_resumability(
-    actions: list[Action], projects_root: Path | None = None
-) -> list[Action]:
-    """Downgrade Archive verdicts whose session cannot be proven recoverable.
-
-    Applied to the verdicts rather than inside the archive loop so that
-    `attic reap --dry-run` shows what will actually happen. The soak has the
-    operator reading that output for days before granting reaping authority;
-    a dry-run promising an archive the tick would refuse is worse than no
-    dry-run at all.
-    """
-    gated: list[Action] = []
-    for action in actions:
-        if isinstance(action, Archive):
-            blocker = resume_blocker(action.pane, projects_root)
-            if blocker is not None:
-                gated.append(Skip(action.pane, blocker))
-                continue
-        gated.append(action)
-    return gated
-
-
 def run_tick(
     home: AtticHome,
     client,
@@ -73,22 +50,21 @@ def run_tick(
 ) -> TickResult:
     """Snapshot always; reap only when every guard passes. Never raises."""
     home.ensure()
-    config = home.load_config()
 
     try:
-        panes = client.pane_list()
-        labels = client.workspace_labels()
+        result = evaluate(home, client, now, projects_root)
     except HerdrError as exc:
         log.error("herdr unavailable, skipping tick: %s", exc)
         return TickResult(reason=f"herdr unavailable: {exc}")
+    panes, labels, actions = result.panes, result.labels, result.actions
+    config = result.config  # the snapshot the decisions were made under
 
     for path in prune_inventory(home, now, config.inventory_retention_days):
         log.info("pruned inventory %s", path.name)
     for path in prune_archives(home, now, config.archive_retention_days):
         log.info("pruned archive %s", path.name)
 
-    state = update_state(panes, home.load_state(), now)
-    home.save_state(state)
+    home.save_state(result.state)
 
     # Determine whether reaping is permitted, but do NOT return yet: verdicts are
     # computed either way. `attic` installs PAUSED and the soak procedure is "read
@@ -111,8 +87,6 @@ def run_tick(
                 )
                 blocked = f"protocol mismatch: {protocol} != {config.herdr_protocol}"
 
-    actions = _gate_on_resumability(decide(panes, state, now, config), projects_root)
-
     # Inventory is written after decide() so it can record WHY each pane was
     # skipped, but it is still unconditional: snapshotting is pure observation
     # and must not be gated on whether reaping is permitted.
@@ -128,42 +102,18 @@ def run_tick(
         log.info("reaping disabled: %s", blocked)
         return TickResult(actions=actions, reason=blocked)
 
-    archiver = Archiver(home, client)
     archived: list[str] = []
     for action in actions:
         if not isinstance(action, Archive):
             continue
         pane = action.pane
         label = labels.get(pane.workspace_id, pane.workspace_id)
-        path = archiver.archive(action, label, now)
-        if path is None:
+        archive_id, message = archive_and_close(home, client, action, label, now)
+        if archive_id is None:
             log.warning("archive failed for %s, leaving it alive", pane.pane_id)
             continue
-        close_failed = False
-        try:
-            client.pane_close(pane.pane_id)
-        except HerdrError as exc:
-            close_failed = True
-            log.error("archived %s but close failed: %s", pane.pane_id, exc)
-        entry = {
-            "id": path.name,
-            "pane_id": pane.pane_id,
-            "title": pane.title,
-            "cwd": pane.cwd,
-            "session_uuid": pane.session_uuid,
-            "archived_at": iso(now),
-            "close_failed": close_failed,
-        }
-        try:
-            archiver.append_index(entry)
-        except OSError as exc:
-            # The archive directory and its manifest are already durable, and
-            # `attic list` reads manifests from disk rather than this index, so the
-            # session stays discoverable and restorable. Only the append-only log
-            # loses this entry and its close_failed marker.
-            log.error("archived %s but index append failed: %s", pane.pane_id, exc)
-        archived.append(path.name)
-        log.info("archived %s as %s", pane.pane_id, path.name)
+        archived.append(archive_id)
+        log.info(message)
 
     return TickResult(actions=actions, archived=archived, reaped=True, reason="ok")
 
@@ -200,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     snooze_p = sub.add_parser("snooze", help="protect this pane until a deadline")
     snooze_p.add_argument("identifier", help="pane id (w4:p2) or terminal id")
     snooze_p.add_argument("duration", help="30m, 4h, 2d")
+    sub.add_parser("ui", help="open the control surface")
 
     args = parser.parse_args(argv)
 
@@ -291,6 +242,15 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
             if home.load_state()[terminal_id].pinned:
                 print("note: pane is pinned; snooze applies only after unpin")
+            return 0
+        elif args.command == "ui":
+            try:
+                from .tui.app import AtticApp
+            except ImportError:
+                print("attic ui needs textual: 'uv sync --extra tui' in a checkout, "
+                      "or reinstall with './install.sh'", file=sys.stderr)
+                return 1
+            AtticApp(home, HerdrClient()).run()
             return 0
     except Exception:                       # never crash the LaunchAgent loop
         log.exception("unhandled error in %s", args.command)

@@ -6,11 +6,11 @@ set -euo pipefail
 # from the repo root. Neither can be assumed of the caller's cwd.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PLIST="$HOME/Library/LaunchAgents/com.you.attic.plist"
+PLIST="$HOME/Library/LaunchAgents/com.attic.plist"
 mkdir -p "$HOME/.attic/logs" "$HOME/Library/LaunchAgents"
-cp "$REPO/launchd/com.you.attic.plist" "$PLIST"
+cp "$REPO/launchd/com.attic.plist" "$PLIST"
 
-uv tool install --editable "$REPO"
+uv tool install --editable "$REPO[tui]"
 
 # Start paused. Reaping is enabled only after the soak in the README.
 touch "$HOME/.attic/PAUSE"
