@@ -1,0 +1,46 @@
+# herdr plugin manifest for attic.
+#
+# Every value below was verified against a live herdr 0.8.0 session by linking a
+# probe manifest that printed its own environment, then unlinking it. Nothing here
+# is inferred — an earlier draft of this project guessed a herdr response shape and
+# would have broken every session restore while the whole test suite stayed green.
+
+id = "attic"
+name = "attic"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Archive idle agent panes and bring them back"
+platforms = ["macos", "linux"]
+
+# VERIFIED: the entrypoint runs with the plugin root as its working directory
+# (probe printed PWD=/Users/you/repos/attic), so `--project .` resolves.
+# HERDR_PLUGIN_ROOT is also injected and would be the more robust choice if the
+# cwd behaviour ever changes.
+[[panes]]
+id = "control"
+title = "attic"
+placement = "tab"
+command = ["uv", "run", "--project", ".", "attic", "ui"]
+
+# VERIFIED: an action receives NO argv — the probe printed `ARGV=` empty. The target
+# pane arrives only in HERDR_PLUGIN_CONTEXT_JSON as `focused_pane_id`, alongside
+# workspace_id, tab_id, focused_pane_cwd and invocation_source. Writing
+# `attic pin $HERDR_PANE_ID` here would have pinned the plugin's own pane rather
+# than the one the user acted on.
+[[actions]]
+id = "pin"
+title = "attic: pin pane (never reap)"
+contexts = ["pane"]
+command = [
+  "sh", "-c",
+  'exec uv run --project . attic pin "$(printf %s "$HERDR_PLUGIN_CONTEXT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[\"focused_pane_id\"])")"',
+]
+
+[[actions]]
+id = "snooze"
+title = "attic: snooze pane 4h"
+contexts = ["pane"]
+command = [
+  "sh", "-c",
+  'exec uv run --project . attic snooze "$(printf %s "$HERDR_PLUGIN_CONTEXT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[\"focused_pane_id\"])")" 4h',
+]
