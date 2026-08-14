@@ -4,6 +4,7 @@ pytest.importorskip("textual")
 
 from fakes import FakeHerdrClient
 from test_policy import mkpane
+from textual.widgets import Footer, TabbedContent
 
 from attic.store import AtticHome
 from attic.tui.app import AtticApp
@@ -359,3 +360,59 @@ async def test_the_panel_updates_when_the_tab_changes(tmp_path):
         await pilot.press("g", "T")            # back to fleet
         await pilot.pause()
         assert "dir" in str(app.query_one("#detail").render())
+
+
+def _box(widget):
+    """(top, bottom) screen rows a widget occupies."""
+    r = widget.region
+    return r.y, r.y + r.height
+
+
+async def test_the_detail_panel_is_actually_on_screen(tmp_path):
+    """Asserting `display is True` did not catch this: the panel was displayed,
+    sized and populated, and laid out at y=29 on a 30-row screen — entirely off
+    the visible area, underneath the footer. TabbedContent expands to fill the
+    screen, so a sibling appended after it has nowhere to go. Geometry is the
+    only assertion that distinguishes "shown" from "visible"."""
+    app = app_for(tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+
+        height = app.screen.size.height
+        panel_top, panel_bottom = _box(app.query_one("#detail"))
+        footer_top, _ = _box(app.query_one(Footer))
+
+        assert panel_bottom <= height, "panel extends past the bottom of the screen"
+        assert panel_top < panel_bottom, "panel has no height"
+        assert panel_bottom <= footer_top, "panel is drawn underneath the footer"
+
+
+async def test_the_panel_and_command_line_do_not_overlap(tmp_path):
+    """Both live at the bottom. Docking them separately made each claim the same
+    rows, so typing a command drew over the panel describing its target."""
+    app = app_for(tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.press(":")
+        await pilot.pause()
+
+        _, panel_bottom = _box(app.query_one("#detail"))
+        cmd_top, cmd_bottom = _box(app.query_one("#command"))
+        footer_top, _ = _box(app.query_one(Footer))
+
+        assert panel_bottom <= cmd_top, "panel overlaps the command line"
+        assert cmd_bottom <= footer_top, "command line is drawn under the footer"
+
+
+async def test_the_tab_area_shrinks_to_make_room(tmp_path):
+    """The proof that space is reserved rather than overdrawn."""
+    app = app_for(tmp_path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        before = app.query_one(TabbedContent).size.height
+        await pilot.press("i")
+        await pilot.pause()
+        assert app.query_one(TabbedContent).size.height < before
