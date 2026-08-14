@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE — not usable as-is. install.sh substitutes the placeholders below.
+  Keep this comment free of double-underscores: install.sh refuses to install a
+  plist that still contains any, which is what makes the guard trustworthy.
+
+  A plist cannot ship with real paths in it: it is copied onto someone else's
+  machine, where the home directory, the attic executable, and herdr all live
+  somewhere different. Copying this file verbatim produces a LaunchAgent that
+  loads successfully and then fails every five minutes into a log nobody reads.
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.attic</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/you/.local/bin/uv</string>
-        <string>run</string>
-        <string>--project</string>
-        <string>/Users/you/repos/attic</string>
-        <string>attic</string>
+        <string>__ATTIC_BIN__</string>
         <string>tick</string>
     </array>
     <key>StartInterval</key>
@@ -19,13 +23,21 @@
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/Users/you/.attic/logs/launchd.out.log</string>
+    <string>__HOME__/.attic/logs/launchd.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/you/.attic/logs/launchd.err.log</string>
+    <string>__HOME__/.attic/logs/launchd.err.log</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- launchd provides no PATH. attic shells out to `herdr`, so the
+             directory containing it must be named explicitly or every tick
+             fails with "herdr unavailable". -->
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/bin:/bin:/Users/you/.local/bin</string>
+        <string>__PATH__</string>
+        <!-- launchd also provides no locale, and herdr's JSON carries non-ASCII
+             status glyphs (◐ ◑ ✳) in pane titles. Without a UTF-8 locale,
+             decoding them raises and the tick dies. -->
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
     </dict>
 </dict>
 </plist>
