@@ -236,3 +236,49 @@ async def test_tui_archive_goes_through_the_shared_execution_path(tmp_path):
     entries = [json.loads(line) for line in home.index_path.read_text().splitlines()]
     assert [e["pane_id"] for e in entries] == [chosen]
     assert entries[0]["close_failed"] is False
+
+
+async def test_i_toggles_the_detail_panel(tmp_path):
+    """A panel toggle reads and mutates nothing, so it is allowed on a bare key.
+    test_no_single_keystroke_mutates_state already presses every letter and
+    asserts no state change, which covers `i` automatically."""
+    app = app_for(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one("#detail")
+        assert panel.display is False
+        await pilot.press("i")
+        assert panel.display is True
+        await pilot.press("i")
+        assert panel.display is False
+
+
+async def test_the_panel_describes_the_selected_pane_and_follows_the_cursor(tmp_path):
+    """The panel must track the selection the same way commands do, or it
+    describes one pane while `:archive` acts on another."""
+    app = app_for_many(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        table = app.query_one("#fleet-table")
+        first = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        shown = str(app.query_one("#detail").render())
+        assert "dir" in shown and "last ask" in shown
+        # The panel names its pane, so it is verifiable that it describes the
+        # SELECTED one — the fixture's panes share a title and cwd otherwise.
+        assert first in shown
+
+        await pilot.press("j")
+        await pilot.pause()
+        moved = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        assert moved != first, "fixture did not actually move the cursor"
+        after = str(app.query_one("#detail").render())
+        assert moved in after and first not in after
+
+
+async def test_the_fleet_table_carries_size_and_repo(tmp_path):
+    app = app_for(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cols = [str(c.label) for c in app.query_one("#fleet-table").columns.values()]
+        assert "size" in cols and "repo" in cols

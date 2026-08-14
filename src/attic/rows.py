@@ -13,6 +13,7 @@ from datetime import datetime
 from .catalog import load_manifests
 from .evaluate import Evaluation
 from .policy import Archive
+from .session import human_bytes, repo_info, transcript_size
 from .store import AtticHome
 
 
@@ -25,6 +26,12 @@ class FleetRow:
     verdict: str
     reason: str
     terminal_id: str
+    # Cheap per-row detail: a stat and a walk up to the nearest .git. Both run
+    # for every row on every 2s refresh; anything costlier belongs in the panel.
+    size: str = "—"
+    repo: str = "—"
+    cwd: str = ""
+    is_worktree: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,7 +73,7 @@ def _idle_seconds(evaluation: Evaluation, terminal_id: str, now: datetime) -> fl
     return (now - since).total_seconds()
 
 
-def fleet_rows(evaluation: Evaluation, now: datetime) -> list[FleetRow]:
+def fleet_rows(evaluation: Evaluation, now: datetime, projects_root=None) -> list[FleetRow]:
     """Sorted by how close each pane is to being reaped, so the thing about to
     happen sits at the top where it will be seen."""
     by_pane = {a.pane.pane_id: a for a in evaluation.actions}
@@ -86,6 +93,10 @@ def fleet_rows(evaluation: Evaluation, now: datetime) -> list[FleetRow]:
                 verdict="archive" if archiving else "skip",
                 reason="" if archiving else getattr(action, "reason", ""),
                 terminal_id=pane.terminal_id,
+                size=human_bytes(transcript_size(pane, projects_root)),
+                repo=(info.name if (info := repo_info(pane.cwd)) else "—"),
+                cwd=pane.cwd or "",
+                is_worktree=bool(info and info.is_worktree),
             ),
         ))
     return [row for _, row in sorted(rows, key=lambda pair: pair[0])]
