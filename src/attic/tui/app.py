@@ -91,10 +91,12 @@ class AtticApp(App):
             return
 
         fleet = self.query_one("#fleet-table", DataTable)
+        selected = self._selected_key(fleet)
         fleet.clear()
         for row in fleet_rows(ev, now):
             fleet.add_row(row.pane_id, row.workspace, row.status,
                           row.idle_for, row.verdict, row.reason, key=row.pane_id)
+        self._restore_selection(fleet, selected)
 
         activity = self.query_one("#activity-table", DataTable)
         activity.clear()
@@ -102,10 +104,41 @@ class AtticApp(App):
             activity.add_row(row.at, row.pane_id, row.title, row.verdict, row.reason)
 
         attic = self.query_one("#attic-table", DataTable)
+        selected = self._selected_key(attic)
         attic.clear()
         for row in attic_rows(self.home):
             attic.add_row(row.archive_id, row.archived_at, row.workspace, row.title,
                           key=row.archive_id)
+        self._restore_selection(attic, selected)
+
+    @staticmethod
+    def _selected_key(table: DataTable) -> str | None:
+        """The row key under the cursor, or None if there is no usable selection."""
+        if not table.row_count or table.cursor_row is None:
+            return None
+        try:
+            return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _restore_selection(table: DataTable, key: str | None) -> None:
+        """Put the cursor back on the same ROW KEY, not the same row index.
+
+        refresh_data clears and repopulates every 2s. Without this the cursor
+        snaps to row 0, so a user who selects a pane and pauses to type
+        `:archive` would archive whichever pane happens to sort first — a
+        mutation on a different session than the one displayed.
+
+        Restoring by key rather than index also survives re-sorting: fleet_rows
+        orders by time-to-reap, so rows genuinely move between refreshes.
+        """
+        if key is None or not table.row_count:
+            return
+        try:
+            table.move_cursor(row=table.get_row_index(key))
+        except Exception:
+            pass    # that row is gone (pane closed) — leave the cursor where it landed
 
     def _table(self) -> DataTable:
         pane = self.query_one(TabbedContent).active
