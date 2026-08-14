@@ -196,3 +196,43 @@ async def test_herdr_dying_mid_command_does_not_crash_the_tui(tmp_path):
         await pilot.pause()
         assert app.is_running
         assert app.home.load_state() == {}
+
+
+async def test_tui_archive_goes_through_the_shared_execution_path(tmp_path):
+    """I2: `:archive` must archive, close, AND append an index entry — the same
+    three steps run_tick performs, via the same function.
+
+    Before archive_and_close was extracted, the TUI did its own archive+close and
+    never appended an index entry, so a TUI archive left no trace in the
+    append-only audit log. Task 1 extracted evaluate() so the two callers could
+    not diverge on DECISIONS; this pins the EXECUTION half, which had already
+    drifted once. Asserting the index entry rather than mocking the call is what
+    makes re-inlining the logic fail here.
+    """
+    import json
+
+    from attic.resumable import session_path
+
+    home = AtticHome(tmp_path)
+    home.ensure()
+    panes = [mkpane("w4:p2"), mkpane("w4:p3")]
+    client = FakeHerdrClient(panes=panes)
+    root = tmp_path / "projects"
+    for pane in panes:  # resume_blocker refuses to close an unwritten transcript
+        path = session_path(pane.cwd, pane.session_uuid, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"type":"user"}\n', encoding="utf-8")
+
+    app = AtticApp(home, client, projects_root=root)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        chosen = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        await pilot.press(":")
+        await pilot.press("a", "r", "c", "h", "i", "v", "e", "enter")
+        await pilot.pause()
+
+    assert client.closed == [chosen]
+    entries = [json.loads(line) for line in home.index_path.read_text().splitlines()]
+    assert [e["pane_id"] for e in entries] == [chosen]
+    assert entries[0]["close_failed"] is False
