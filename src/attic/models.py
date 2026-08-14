@@ -25,7 +25,7 @@ class Pane:
         return self.agent is not None
 
     @classmethod
-    def from_json(cls, obj: dict) -> "Pane":
+    def from_json(cls, obj: dict) -> Pane:
         session = obj.get("agent_session") or {}
         scroll = obj.get("scroll") or {}
         return cls(

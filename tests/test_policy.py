@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -6,7 +6,7 @@ from attic.models import Pane
 from attic.policy import Archive, Skip, decide, iso, update_state
 from attic.store import Config, PaneState
 
-NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
 CFG = Config()
 
 
@@ -173,7 +173,7 @@ def test_iso_rejects_naive_datetime():
     """A naive datetime would be read as system local time, shifting the idle clock
     by the local UTC offset and archiving panes that are not eligible. Fail loudly."""
     with pytest.raises(ValueError, match="timezone-aware"):
-        iso(datetime(2026, 8, 13, 12, 0, 0))
+        iso(datetime(2026, 8, 13, 12, 0, 0))  # noqa: DTZ001 — naive on purpose: that is what must raise
 
 
 def test_every_pane_receives_a_verdict():

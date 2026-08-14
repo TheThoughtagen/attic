@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from attic.models import Pane, parse_pane_list
+from attic.models import parse_pane_list
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pane_list_sample.json"
 

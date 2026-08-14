@@ -62,7 +62,7 @@ def _idle_seconds(evaluation: Evaluation, terminal_id: str, now: datetime) -> fl
     entry = evaluation.state.get(terminal_id)
     if entry is None or entry.first_idle_at is None:
         return None
-    since = datetime.fromisoformat(entry.first_idle_at.replace("Z", "+00:00"))
+    since = datetime.fromisoformat(entry.first_idle_at)
     return (now - since).total_seconds()
 
 

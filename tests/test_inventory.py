@@ -1,12 +1,13 @@
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from test_policy import mkpane
 
 from attic.inventory import append_inventory, prune_archives, prune_inventory
 from attic.store import AtticHome
-from test_policy import mkpane
 
-NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=UTC)
 
 
 def test_inventory_line_records_every_pane(tmp_path):

@@ -1,9 +1,9 @@
-import json
+
+from fakes import FakeHerdrClient
+from test_policy import mkpane
 
 from attic.cli import main
 from attic.store import AtticHome
-from fakes import FakeHerdrClient
-from test_policy import mkpane
 
 
 def stub_client(monkeypatch, panes):

@@ -7,12 +7,14 @@ dependency must never be able to stop the reaper.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
+from textual.widgets.data_table import RowDoesNotExist
 
 from ..evaluate import evaluate
 from ..rows import activity_rows, attic_rows, fleet_rows
@@ -28,7 +30,7 @@ class AtticApp(App):
     CSS = "DataTable { height: 1fr; }"
     TITLE = "attic"
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("j", "cursor_down", "down", show=False),
         Binding("k", "cursor_up", "up", show=False),
         Binding("ctrl+d", "half_down", "½ down", show=False),
@@ -85,11 +87,11 @@ class AtticApp(App):
         if self.query_one("#command", Input).display:
             return      # never move the ground under a command being typed
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             ev = evaluate(self.home, self.client, now, self.projects_root)
             self.last_error = None
             self.sub_title = ""
-        except Exception as exc:            # herdr down, malformed payload, etc.
+        except Exception as exc:  # noqa: BLE001 — herdr down, malformed payload, etc.
             self.last_error = str(exc)
             self.sub_title = f"stale — {exc}"
             self.notify(str(exc), severity="error")
@@ -123,7 +125,7 @@ class AtticApp(App):
             return None
         try:
             return str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
-        except Exception:
+        except Exception:  # noqa: BLE001 — no usable selection is not an error
             return None
 
     @staticmethod
@@ -142,7 +144,7 @@ class AtticApp(App):
             return
         try:
             table.move_cursor(row=table.get_row_index(key))
-        except Exception:
+        except RowDoesNotExist:
             pass    # that row is gone (pane closed) — leave the cursor where it landed
 
     def _table(self) -> DataTable:
@@ -229,9 +231,9 @@ class AtticApp(App):
             result = run_command(verb, args, CommandContext(
                 home=self.home, client=self.client,
                 tab=tab,
-                row_key=row_key, now=datetime.now(timezone.utc),
+                row_key=row_key, now=datetime.now(UTC),
                 projects_root=self.projects_root))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — herdr dying mid-command must not kill the app
             self.notify(f"command failed: {exc}", severity="error")
             return
         self.notify(result.message, severity="information" if result.ok else "error")

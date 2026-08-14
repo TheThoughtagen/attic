@@ -3,7 +3,6 @@
 """
 
 import shutil
-from datetime import datetime, timezone
 
 import pytest
 

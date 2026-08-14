@@ -8,7 +8,7 @@ import logging
 import sys
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .catalog import format_list, load_manifests, resolve_id
@@ -157,14 +157,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         home = AtticHome.default()
         _setup_logging(home)
-    except Exception:
+    except Exception:  # noqa: BLE001 — logging is not up; nothing may escape here
         # Logging is not up yet, so stderr is the only channel available. Still
         # return 0: a crashing timer stops protecting the user, and under launchd
         # the crash itself produces no visible symptom.
         traceback.print_exc(file=sys.stderr)
         return 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     try:
         if args.command == "tick":

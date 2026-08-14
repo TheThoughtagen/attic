@@ -2,10 +2,11 @@ import pytest
 
 pytest.importorskip("textual")
 
-from attic.store import AtticHome
-from attic.tui.app import AtticApp
 from fakes import FakeHerdrClient
 from test_policy import mkpane
+
+from attic.store import AtticHome
+from attic.tui.app import AtticApp
 
 pytestmark = pytest.mark.asyncio
 

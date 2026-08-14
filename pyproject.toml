@@ -1,9 +1,32 @@
 [project]
-name = "attic"
-version = "0.1.0"
+name = "attic-herdr"
+dynamic = ["version"]
 description = "Archive idle herdr agent panes before reclaiming them"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
+authors = [{ name = "Pat Mannion" }]
+keywords = ["herdr", "claude-code", "terminal", "session-management", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/TheThoughtagen/attic"
+Repository = "https://github.com/TheThoughtagen/attic"
+Issues = "https://github.com/TheThoughtagen/attic/issues"
 
 [project.optional-dependencies]
 tui = ["textual>=8,<9"]
@@ -12,14 +35,48 @@ tui = ["textual>=8,<9"]
 attic = "attic.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# The git tag is the version. A hardcoded version silently drifts from the tag
+# and publishes the wrong one; PyPI accepts it and there is no taking it back.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"  # PyPI rejects local version segments
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/attic"]
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.ruff]
+# Pinned explicitly so a contributor's machine, this repo, and CI all lint the
+# same code the same way. Without it ruff falls back to ambient discovery and
+# reports a different set of errors locally than in CI.
+target-version = "py311"
+line-length = 96
+
+[tool.ruff.lint]
+select = [
+    "E4", "E7", "E9", "F",  # pyflakes + the pycodestyle rules ruff enables by default
+    "I",                     # import sorting
+    "UP",                    # pyupgrade — this project targets 3.11+
+    "B",                     # bugbear
+    "DTZ",                   # naive datetimes: attic's whole policy is time-based
+    "BLE",                   # blind excepts
+    "S",                     # bandit
+    "RUF",
+    "FURB",
+    "PLW",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is the point; "/tmp/repo" values are fake cwd STRINGS in fixtures, never
+# touched on disk; the subprocess call is the daemon-purity check running python -c.
+"tests/*" = ["S101", "S108", "S603", "PLW1510", "BLE001"]
 
 [tool.pytest.ini_options]
 markers = ["integration: requires a live herdr server (deselect with -m 'not integration')"]

@@ -1,6 +1,6 @@
 import json
 
-from attic.store import AtticHome, Config, PaneState
+from attic.store import AtticHome, PaneState
 
 
 def test_default_config_matches_spec(tmp_path):
