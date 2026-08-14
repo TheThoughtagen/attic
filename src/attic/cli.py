@@ -56,6 +56,12 @@ def run_tick(
     except HerdrError as exc:
         log.error("herdr unavailable, skipping tick: %s", exc)
         return TickResult(reason=f"herdr unavailable: {exc}")
+    except ValueError as exc:
+        # Malformed config (e.g. quiet_hours). Archiving nothing is the safe
+        # direction, and run_tick promises never to raise — a traceback out of
+        # here would kill the launchd job rather than skip one tick.
+        log.error("invalid configuration, skipping tick: %s", exc)
+        return TickResult(reason=f"invalid configuration: {exc}")
     panes, labels, actions = result.panes, result.labels, result.actions
     config = result.config  # the snapshot the decisions were made under
 
