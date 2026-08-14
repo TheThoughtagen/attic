@@ -68,7 +68,7 @@ def test_install_pauses_before_loading_the_agent():
 def test_install_sh_is_syntactically_valid():
     """A shell syntax error surfaces only when someone runs it."""
     bash = shutil.which("bash") or "/bin/bash"
-    proc = subprocess.run([bash, "-n", str(INSTALL)],  # noqa: S603 — argv is fixed
+    proc = subprocess.run([bash, "-n", str(INSTALL)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
 
