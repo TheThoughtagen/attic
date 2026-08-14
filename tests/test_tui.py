@@ -199,15 +199,14 @@ async def test_herdr_dying_mid_command_does_not_crash_the_tui(tmp_path):
 
 
 async def test_tui_archive_goes_through_the_shared_execution_path(tmp_path):
-    """I2: `:archive` must archive, close, AND append an index entry — the same
-    three steps run_tick performs, via the same function.
+    """The keystroke path: typing `:archive` reaches archive_and_close intact.
 
-    Before archive_and_close was extracted, the TUI did its own archive+close and
-    never appended an index entry, so a TUI archive left no trace in the
-    append-only audit log. Task 1 extracted evaluate() so the two callers could
-    not diverge on DECISIONS; this pins the EXECUTION half, which had already
-    drifted once. Asserting the index entry rather than mocking the call is what
-    makes re-inlining the logic fail here.
+    test_archive_via_the_tui_leaves_an_index_entry already covers the execution
+    half by calling run_command directly. This covers the seam BEFORE that call —
+    keypress, command parse, captured row key, dispatch — which is exactly where
+    the branch's worst defect lived: every component was individually correct and
+    the command still reached the wrong pane. That seam has no other end-to-end
+    test, so it gets one for the destructive command specifically.
     """
     import json
 
