@@ -117,9 +117,38 @@ environment setup beyond what `./install.sh` or `uv sync --extra tui` already pr
   "per_tick_cap": 3,
   "archive_retention_days": 30,
   "inventory_retention_days": 90,
-  "herdr_protocol": 19
+  "herdr_protocol": 19,
+  "quiet_hours": "22:00-08:00"
 }
 ```
+
+### `quiet_hours`
+
+An overnight window, in your machine's **local** time, during which nothing is
+archived and the idle clock is continuously reset. Omit it (or set `null`) to
+disable — that is the default.
+
+Without it, a session you leave open at bedtime passes the idle threshold while
+you sleep and is archived by the first tick of the morning. With it, the clock
+restarts when the window ends, so a session needs a full threshold of *waking*
+time before it becomes eligible:
+
+```
+21:00  goes idle
+22:00  window opens   → clock re-stamped every tick, nothing reaped
+08:00  window closes  → clock reads ~5 minutes old
+11:55  4h of waking idleness elapsed → archived
+```
+
+Windows that cross midnight are the normal case; same-day windows
+(`"01:00-05:00"`) work too. The start is inclusive and the end exclusive, so
+`08:00` is already the working day. Daylight-saving transitions are handled by
+the system timezone rather than by arithmetic.
+
+`attic reap --dry-run` reports the resolved zone in the skip reason
+(`overnight hours (22:00-08:00 America/Chicago)`) — check it once, since a
+daemon that resolves a different zone than your shell would shift the window
+by hours. A malformed value aborts the tick and archives nothing.
 
 ## Development
 

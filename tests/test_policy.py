@@ -41,32 +41,32 @@ def skip_reason(actions, pane_id: str) -> str:
 # --- update_state ---------------------------------------------------------
 
 def test_idle_pane_starts_the_clock():
-    st = update_state([mkpane()], {}, NOW)
+    st = update_state([mkpane()], {}, NOW, Config())
     assert st["term_w1:p1"].first_idle_at == "2026-08-13T12:00:00Z"
 
 
 def test_revision_change_resets_the_clock():
     prior = {"term_w1:p1": idle_since(10, revision=5)}
-    st = update_state([mkpane(revision=6)], prior, NOW)
+    st = update_state([mkpane(revision=6)], prior, NOW, Config())
     assert st["term_w1:p1"].first_idle_at == "2026-08-13T12:00:00Z"
     assert st["term_w1:p1"].last_revision == 6
 
 
 def test_stable_revision_preserves_the_clock():
     prior = {"term_w1:p1": idle_since(10, revision=5)}
-    st = update_state([mkpane(revision=5)], prior, NOW)
+    st = update_state([mkpane(revision=5)], prior, NOW, Config())
     assert st["term_w1:p1"].first_idle_at == "2026-08-13T02:00:00Z"
 
 
 def test_non_idle_status_clears_the_clock():
     prior = {"term_w1:p1": idle_since(10)}
-    st = update_state([mkpane(status="working")], prior, NOW)
+    st = update_state([mkpane(status="working")], prior, NOW, Config())
     assert st["term_w1:p1"].first_idle_at is None
 
 
 def test_vanished_panes_are_dropped_from_state():
     prior = {"term_gone": idle_since(10)}
-    assert "term_gone" not in update_state([mkpane()], prior, NOW)
+    assert "term_gone" not in update_state([mkpane()], prior, NOW, Config())
 
 
 def test_recycled_pane_id_gets_a_fresh_clock():
@@ -77,7 +77,7 @@ def test_recycled_pane_id_gets_a_fresh_clock():
     find it, judge the clock unchanged, and preserve the stale 02:00 timestamp."""
     prior = {"w4:p2": idle_since(10, revision=5)}
     pane = mkpane("w4:p2", terminal_id="term_new", revision=5)
-    st = update_state([pane], prior, NOW)
+    st = update_state([pane], prior, NOW, Config())
     assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"   # fresh, not 02:00
     assert "w4:p2" not in st
 
@@ -196,7 +196,7 @@ def test_flipping_between_done_and_idle_does_not_reset_the_clock():
     """The badge is about the operator's attention, not the agent's activity, so
     a pane oscillating done<->idle must keep accruing idle time."""
     prior = {"term_w1:p1": idle_since(10, revision=5)}
-    st = update_state([mkpane(status="done", revision=5)], prior, NOW)
+    st = update_state([mkpane(status="done", revision=5)], prior, NOW, Config())
     assert st["term_w1:p1"].first_idle_at == "2026-08-13T02:00:00Z"
 
 
@@ -246,7 +246,7 @@ def test_pin_outranks_status_in_the_reported_reason():
 def test_exemptions_survive_update_state():
     prior = {"term_w1:p1": PaneState("2026-08-13T02:00:00Z", 5,
                                      snooze_until="2026-08-14T00:00:00Z", pinned=True)}
-    st = update_state([mkpane(revision=5)], prior, NOW)
+    st = update_state([mkpane(revision=5)], prior, NOW, Config())
     assert st["term_w1:p1"].pinned is True
     assert st["term_w1:p1"].snooze_until == "2026-08-14T00:00:00Z"
 
@@ -255,5 +255,5 @@ def test_update_state_clears_an_expired_snooze():
     """So state.json does not accumulate stale deadlines forever."""
     prior = {"term_w1:p1": PaneState("2026-08-13T02:00:00Z", 5,
                                      snooze_until="2026-08-13T06:00:00Z")}
-    st = update_state([mkpane(revision=5)], prior, NOW)
+    st = update_state([mkpane(revision=5)], prior, NOW, Config())
     assert st["term_w1:p1"].snooze_until is None

@@ -13,6 +13,10 @@ from pathlib import Path
 class Config:
     idle_threshold_hours: float = 4.0
     per_tick_cap: int = 3
+    # Local-time window, e.g. "22:00-08:00", during which nothing is reaped and
+    # the idle clock is continuously reset. None disables it. Idleness accrued
+    # while you are asleep should not spend the threshold you set for waking use.
+    quiet_hours: str | None = None
     archive_retention_days: int = 30
     inventory_retention_days: int = 90
     herdr_protocol: int = 19

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, tzinfo
 
 from .models import Pane
 from .store import Config, PaneState
@@ -52,10 +52,71 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
 
+def parse_quiet_hours(window: str) -> tuple[time, time]:
+    """Parse "HH:MM-HH:MM" into its two local wall-clock endpoints.
+
+    Malformed input raises rather than being guessed at. A window read wrongly
+    does not fail visibly — it silently moves the hours during which sessions
+    get closed, which is the failure this module exists to avoid. Raising aborts
+    the tick and archives nothing, matching iso()'s treatment of naive datetimes.
+    """
+    parts = window.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"quiet_hours must look like '22:00-08:00', got {window!r}")
+    try:
+        start = time.fromisoformat(parts[0].strip())
+        end = time.fromisoformat(parts[1].strip())
+    except ValueError as exc:
+        raise ValueError(f"quiet_hours has an unparseable time: {window!r}") from exc
+    if start == end:
+        # Ambiguous: it could mean "never" or "always", and the two differ by
+        # whether the tool ever reaps at all. Refuse instead of picking.
+        raise ValueError(f"quiet_hours start and end are identical: {window!r}")
+    return start, end
+
+
+def _zone_label(now: datetime, tz: tzinfo | None) -> str:
+    """A human-readable name for the zone the window was resolved in.
+
+    Prefers the IANA key ("America/Chicago") over the abbreviation ("CDT"),
+    because the abbreviation alone does not tell you whether the daemon resolved
+    the same zone your shell did — which is the thing worth noticing.
+    """
+    key = getattr(tz, "key", None)
+    return str(key or now.astimezone(tz).tzname() or "local")
+
+
+def in_quiet_hours(now: datetime, window: str | None, tz: tzinfo | None = None) -> bool:
+    """Whether this instant falls inside the local overnight window.
+
+    `tz` defaults to the system zone, which is what makes "22:00" mean what the
+    user means by it, and handles DST without arithmetic. Tests pass an explicit
+    zone so they do not depend on the machine running them.
+
+    The window is start-inclusive and end-exclusive: 08:00 is already the working
+    day, and treating it as quiet would keep resetting the clock after you sit down.
+    """
+    if not window:
+        return False
+    start, end = parse_quiet_hours(window)
+    local = now.astimezone(tz).time()
+    if start <= end:
+        return start <= local < end
+    return local >= start or local < end   # the window wraps past midnight
+
+
 def update_state(
-    panes: list[Pane], state: dict[str, PaneState], now: datetime
+    panes: list[Pane], state: dict[str, PaneState], now: datetime,
+    config: Config, tz: tzinfo | None = None,
 ) -> dict[str, PaneState]:
-    """Maintain the idle clock. Panes that vanished are dropped."""
+    """Maintain the idle clock. Panes that vanished are dropped.
+
+    During quiet hours the clock is re-stamped on every tick rather than frozen.
+    That is what makes the window "reset" it: when the window ends the newest
+    stamp is one tick old, so the threshold runs from roughly the end of the
+    window instead of from whenever the pane happened to go idle last night.
+    """
+    quiet = in_quiet_hours(now, config.quiet_hours, tz)
     updated: dict[str, PaneState] = {}
     for pane in panes:
         prior = state.get(pane.terminal_id)
@@ -68,7 +129,8 @@ def update_state(
         if pane.agent_status not in REAPABLE_STATUSES:
             updated[pane.terminal_id] = PaneState(None, pane.revision, snooze_until, pinned)
             continue
-        if prior is None or prior.last_revision != pane.revision or prior.first_idle_at is None:
+        if (quiet or prior is None or prior.last_revision != pane.revision
+                or prior.first_idle_at is None):
             updated[pane.terminal_id] = PaneState(iso(now), pane.revision, snooze_until, pinned)
         else:
             updated[pane.terminal_id] = PaneState(
@@ -77,7 +139,8 @@ def update_state(
     return updated
 
 
-def _verdict(pane: Pane, state: dict[str, PaneState], now, config) -> Skip | datetime:
+def _verdict(pane: Pane, state: dict[str, PaneState], now, config,
+             tz: tzinfo | None = None) -> Skip | datetime:
     """Return a Skip, or the datetime the pane went idle if it qualifies."""
     if not pane.is_agent:
         return Skip(pane, "not an agent pane")
@@ -90,6 +153,11 @@ def _verdict(pane: Pane, state: dict[str, PaneState], now, config) -> Skip | dat
             until = _parse(entry.snooze_until)
             if now < until:
                 return Skip(pane, f"snoozed until {entry.snooze_until}")
+    if in_quiet_hours(now, config.quiet_hours, tz):
+        # Naming the window and the resolved zone makes a misresolved timezone
+        # visible in `attic reap --dry-run` and the inventory, rather than
+        # silently shifting the hours during which sessions are closed.
+        return Skip(pane, f"overnight hours ({config.quiet_hours} {_zone_label(now, tz)})")
     if pane.agent_status not in REAPABLE_STATUSES:
         return Skip(pane, f"status is {pane.agent_status}")
     if not pane.session_uuid:
@@ -105,11 +173,12 @@ def _verdict(pane: Pane, state: dict[str, PaneState], now, config) -> Skip | dat
 
 
 def decide(
-    panes: list[Pane], state: dict[str, PaneState], now: datetime, config: Config
+    panes: list[Pane], state: dict[str, PaneState], now: datetime, config: Config,
+    tz: tzinfo | None = None,
 ) -> list[Action]:
     """Return one verdict per pane, preserving input order."""
     verdicts: dict[str, Skip | datetime] = {
-        p.pane_id: _verdict(p, state, now, config) for p in panes
+        p.pane_id: _verdict(p, state, now, config, tz) for p in panes
     }
     eligible = sorted(
         (p for p in panes if isinstance(verdicts[p.pane_id], datetime)),

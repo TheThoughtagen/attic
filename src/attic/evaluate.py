@@ -77,7 +77,7 @@ def evaluate(
     panes = client.pane_list()
     labels = client.workspace_labels()
     config = home.load_config()
-    state = update_state(panes, home.load_state(), now)
+    state = update_state(panes, home.load_state(), now, config)
     actions = gate_on_resumability(decide(panes, state, now, config), projects_root)
     return Evaluation(panes=panes, state=state, actions=actions, labels=labels,
                       config=config)
