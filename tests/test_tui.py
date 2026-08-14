@@ -339,7 +339,10 @@ async def test_the_size_column_and_the_panel_agree(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#fleet-table")
-        size_cell = str(table.get_row_at(0)[4])
+        # Looked up by name: a hardcoded index silently reads the wrong column
+        # the moment one is inserted, which is exactly what happened here.
+        cols = [str(c.label) for c in table.columns.values()]
+        size_cell = str(table.get_row_at(0)[cols.index("size")])
         assert size_cell != "—", "size column ignored projects_root"
         await pilot.press("i")
         await pilot.pause()
@@ -416,3 +419,56 @@ async def test_the_tab_area_shrinks_to_make_room(tmp_path):
         await pilot.press("i")
         await pilot.pause()
         assert app.query_one(TabbedContent).size.height < before
+
+
+async def test_the_fleet_table_shows_a_summary_column(tmp_path):
+    """The Fleet tab is the one you scan; without the title every row was
+    identified only by an opaque pane id."""
+    app = app_for(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        cols = [str(c.label) for c in table.columns.values()]
+        assert "summary" in cols
+        assert str(table.get_row_at(0)[cols.index("summary")]) == "Some task"
+
+
+async def test_the_panel_shows_the_untruncated_summary(tmp_path):
+    app = app_for(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert "summary   Some task" in str(app.query_one("#detail").render())
+
+
+async def test_a_blank_title_falls_back_to_a_dash(tmp_path):
+    """A whitespace-only title is truthy, so `title or "—"` rendered an empty
+    line rather than the fallback."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    pane = type(pane)(**{**pane.__dict__, "title": "   "})
+    app = AtticApp(home, FakeHerdrClient(panes=[pane]), projects_root=tmp_path / "projects")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert "summary   —" in str(app.query_one("#detail").render())
+
+
+async def test_a_blank_title_shows_a_dash_in_the_table_too(tmp_path):
+    """Table and panel must agree for the same pane."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    pane = type(pane)(**{**pane.__dict__, "title": "   "})
+    app = AtticApp(home, FakeHerdrClient(panes=[pane]), projects_root=tmp_path / "projects")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#fleet-table")
+        cols = [str(c.label) for c in table.columns.values()]
+        assert str(table.get_row_at(0)[cols.index("summary")]) == "—"
+        await pilot.press("i")
+        await pilot.pause()
+        assert "summary   —" in str(app.query_one("#detail").render())

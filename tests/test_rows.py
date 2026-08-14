@@ -119,3 +119,38 @@ def test_attic_rows_are_newest_first(tmp_path):
             {"id": name, "archived_at": stamp, "title": title, "workspace": "wh dev"}),
             encoding="utf-8")
     assert [r.title for r in attic_rows(home)] == ["New", "Old"]
+
+
+def test_ellipsize_trims_on_a_word_boundary():
+    from attic.rows import ellipsize
+    assert ellipsize("short", 20) == "short"
+    assert ellipsize("", 20) == ""
+    long = "Review ignition security diagnostics phase B handoff"
+    out = ellipsize(long, 30)
+    assert len(out) <= 30
+    assert out.endswith("…")
+    assert not out[:-1].endswith(" ")
+    # a single unbroken token still gets cut rather than overflowing the column
+    assert len(ellipsize("x" * 100, 12)) <= 12
+
+
+def test_fleet_rows_carry_the_pane_title_as_a_summary():
+    """herdr's pane title is Claude Code's own ai-title. It was shown on the
+    Activity and Attic tabs but never on Fleet, which is the tab you scan."""
+    pane = mkpane("w1:p1")
+    ev = Evaluation(panes=[pane], state={}, labels={},
+                    actions=[Skip(pane, "pinned")], config=Config())
+    row = fleet_rows(ev, NOW)[0]
+    assert row.summary == pane.title
+
+
+def test_a_blank_title_becomes_a_dash_in_the_fleet_row():
+    """The table and the detail panel must agree. A whitespace-only title is
+    truthy, so the naive fallback rendered an empty cell in one and a dash in
+    the other for the same pane."""
+    for blank in ("", "   ", "\t\n"):
+        pane = mkpane("w1:p1")
+        pane = type(pane)(**{**pane.__dict__, "title": blank})
+        ev = Evaluation(panes=[pane], state={}, labels={},
+                        actions=[Skip(pane, "pinned")], config=Config())
+        assert fleet_rows(ev, NOW)[0].summary == "—"

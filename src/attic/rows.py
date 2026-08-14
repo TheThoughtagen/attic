@@ -16,6 +16,21 @@ from .policy import Archive
 from .session import human_bytes, repo_info, transcript_size
 from .store import AtticHome
 
+SUMMARY_WIDTH = 46
+"""Wide enough for a real ai-title, narrow enough to leave room for the verdict
+and reason — the two columns that say what is about to happen."""
+
+
+def ellipsize(text: str, width: int) -> str:
+    """Trim to width with a trailing ellipsis, on a word boundary where possible."""
+    text = " ".join((text or "").split())
+    if len(text) <= width:
+        return text
+    cut = text[: width - 1]
+    if " " in cut[width // 2:]:
+        cut = cut[: cut.rindex(" ")]
+    return cut.rstrip() + "…"
+
 
 @dataclass(frozen=True)
 class FleetRow:
@@ -30,6 +45,7 @@ class FleetRow:
     # for every row on every 2s refresh; anything costlier belongs in the panel.
     size: str = "—"
     repo: str = "—"
+    summary: str = ""       # herdr's pane title, which is Claude Code's ai-title
     cwd: str = ""
     is_worktree: bool = False
 
@@ -93,6 +109,10 @@ def fleet_rows(evaluation: Evaluation, now: datetime, projects_root=None) -> lis
                 verdict="archive" if archiving else "skip",
                 reason="" if archiving else getattr(action, "reason", ""),
                 terminal_id=pane.terminal_id,
+                # Fallback lives here, not in the widget: the table and the
+                # detail panel must not disagree about what a blank title looks
+                # like, and "   " is truthy so `title or "—"` renders empty.
+                summary=ellipsize(pane.title, SUMMARY_WIDTH) or "—",
                 size=human_bytes(transcript_size(pane, projects_root)),
                 repo=(info.name if (info := repo_info(pane.cwd)) else "—"),
                 cwd=pane.cwd or "",
