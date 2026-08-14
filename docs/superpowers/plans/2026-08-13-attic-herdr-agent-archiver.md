@@ -317,6 +317,23 @@ def test_corrupt_state_falls_back_to_empty(tmp_path):
     assert home.load_state() == {}
 
 
+def test_semantically_corrupt_entries_are_skipped_not_raised(tmp_path):
+    """Valid JSON with wrong-typed fields must not raise: attic runs unattended
+    from a LaunchAgent, so an exception here silently kills every future tick."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.state_path.write_text(json.dumps({
+        "term_good": {"first_idle_at": "2026-08-13T00:00:00Z", "last_revision": 3},
+        "term_bad_revision": {"last_revision": "oops"},
+        "term_null_revision": {"last_revision": None},
+        "term_bad_timestamp": {"first_idle_at": 42, "last_revision": 1},
+    }))
+    loaded = home.load_state()
+    assert set(loaded) == {"term_good"}
+    assert loaded["term_good"].last_revision == 3
+    assert loaded["term_good"].first_idle_at == "2026-08-13T00:00:00Z"
+
+
 def test_save_state_is_atomic_leaving_no_tempfile(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -391,8 +408,11 @@ class AtticHome:
         return cls(Path(env) if env else Path.home() / ".attic")
 
     def ensure(self) -> None:
+        # 0700 throughout: archives hold raw terminal scrollback and the inventory
+        # records every repo path you had open. Owner-only, not default umask.
         for d in (self.root, self.inventory_dir, self.archive_dir, self.log_path.parent):
             d.mkdir(parents=True, exist_ok=True)
+            os.chmod(d, 0o700)
 
     def is_paused(self) -> bool:
         return self.pause_path.exists()
@@ -400,7 +420,7 @@ class AtticHome:
     def load_config(self) -> Config:
         known = {f.name for f in fields(Config)}
         try:
-            raw = json.loads(self.config_path.read_text())
+            raw = json.loads(self.config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return Config()
         if not isinstance(raw, dict):
@@ -409,18 +429,26 @@ class AtticHome:
 
     def load_state(self) -> dict[str, PaneState]:
         try:
-            raw = json.loads(self.state_path.read_text())
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         if not isinstance(raw, dict):
             return {}
         out: dict[str, PaneState] = {}
         for key, val in raw.items():
-            if isinstance(val, dict):
-                out[key] = PaneState(
-                    first_idle_at=val.get("first_idle_at"),
-                    last_revision=int(val.get("last_revision", 0)),
-                )
+            # A malformed entry is dropped, not fatal: losing one pane's idle clock
+            # restarts it, which delays archiving. Raising would kill the whole
+            # unattended tick.
+            if not isinstance(val, dict):
+                continue
+            first_idle_at = val.get("first_idle_at")
+            if first_idle_at is not None and not isinstance(first_idle_at, str):
+                continue
+            try:
+                last_revision = int(val.get("last_revision", 0))
+            except (TypeError, ValueError):
+                continue
+            out[key] = PaneState(first_idle_at=first_idle_at, last_revision=last_revision)
         return out
 
     def save_state(self, state: dict[str, PaneState]) -> None:
@@ -430,7 +458,7 @@ class AtticHome:
             for k, v in state.items()
         }
         tmp = self.state_path.with_suffix(".json.tmp")
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
@@ -471,8 +499,10 @@ Create `tests/test_policy.py`:
 ```python
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from attic.models import Pane
-from attic.policy import Archive, Skip, decide, update_state
+from attic.policy import Archive, Skip, decide, iso, update_state
 from attic.store import Config, PaneState
 
 NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
@@ -539,11 +569,16 @@ def test_vanished_panes_are_dropped_from_state():
 
 
 def test_recycled_pane_id_gets_a_fresh_clock():
-    # Same pane_id, different terminal_id => must not inherit the old clock.
-    prior = {"term_old": idle_since(10, revision=5)}
-    st = update_state([mkpane("w4:p2", terminal_id="term_new")], prior, NOW)
-    assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"
-    assert "term_old" not in st
+    """A closed pane's slot is reused: same pane_id, new terminal_id. If state were
+    keyed by pane_id, the new pane would inherit the dead one's idle clock and be
+    archived seconds after opening. The stale entry is deliberately keyed under the
+    PANE id and given a matching revision, so a pane_id-keyed implementation would
+    find it, judge the clock unchanged, and preserve the stale 02:00 timestamp."""
+    prior = {"w4:p2": idle_since(10, revision=5)}
+    pane = mkpane("w4:p2", terminal_id="term_new", revision=5)
+    st = update_state([pane], prior, NOW)
+    assert st["term_new"].first_idle_at == "2026-08-13T12:00:00Z"   # fresh, not 02:00
+    assert "w4:p2" not in st
 
 
 # --- decide ---------------------------------------------------------------
@@ -608,8 +643,36 @@ def test_per_tick_cap_archives_longest_idle_first():
         panes.append(p)
         st[p.terminal_id] = idle_since(hours)
     actions = decide(panes, st, NOW, CFG)
-    assert archived(actions) == ["w1:p4", "w1:p1", "w1:p2"]   # 30h, 20h, 9h
-    assert skip_reason(actions, "w1:p3") == "per-tick cap reached"
+    # Selection is the safety property: the three longest-idle, not the first three seen.
+    assert set(archived(actions)) == {"w1:p4", "w1:p1", "w1:p2"}   # 30h, 20h, 9h
+    # With a 4h threshold all five are eligible, so BOTH shorter ones are capped.
+    assert skip_reason(actions, "w1:p3") == "per-tick cap reached"   # 6h
+    assert skip_reason(actions, "w1:p0") == "per-tick cap reached"   # 5h
+
+
+def test_decide_returns_verdicts_in_input_order():
+    """Output order is presentation, not policy: `attic reap --dry-run` prints one
+    line per pane and must read in pane order for the operator's soak review."""
+    panes, st = [], {}
+    for i, hours in enumerate([5, 20, 9]):
+        p = mkpane(f"w1:p{i}")
+        panes.append(p)
+        st[p.terminal_id] = idle_since(hours)
+    actions = decide(panes, st, NOW, CFG)
+    assert [a.pane.pane_id for a in actions] == ["w1:p0", "w1:p1", "w1:p2"]
+
+
+def test_iso_normalizes_non_utc_input_to_z():
+    """iso() enforces the UTC contract itself rather than trusting call sites."""
+    mst = timezone(timedelta(hours=-6))
+    assert iso(datetime(2026, 8, 13, 6, 0, 0, tzinfo=mst)) == "2026-08-13T12:00:00Z"
+
+
+def test_iso_rejects_naive_datetime():
+    """A naive datetime would be read as system local time, shifting the idle clock
+    by the local UTC offset and archiving panes that are not eligible. Fail loudly."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        iso(datetime(2026, 8, 13, 12, 0, 0))
 
 
 def test_every_pane_receives_a_verdict():
@@ -634,7 +697,7 @@ Create `src/attic/policy.py`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import Pane
 from .store import Config, PaneState
@@ -658,7 +721,18 @@ Action = Archive | Skip
 
 
 def iso(dt: datetime) -> str:
-    return dt.isoformat().replace("+00:00", "Z")
+    """Serialize as UTC ISO-8601 with a Z suffix, enforcing the project-wide UTC
+    contract here rather than trusting every call site. Three later modules import this.
+
+    Naive datetimes are rejected rather than guessed at: astimezone() would read them
+    as system local time, shifting first_idle_at by the local UTC offset (six hours
+    in the author's zone). A fast idle clock against a four-hour threshold archives
+    panes that are not eligible — the exact false positive this project exists to
+    prevent. Raising aborts the tick and archives nothing, which is the safe direction.
+    """
+    if dt.tzinfo is None:
+        raise ValueError("iso() requires a timezone-aware datetime")
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse(ts: str) -> datetime:
@@ -833,10 +907,74 @@ def test_subprocess_failure_raises_herdr_error():
         HerdrClient(runner=Recorder([OSError("socket gone")])).pane_list()
 
 
-def test_tab_create_returns_new_pane_id():
-    payload = {"result": {"tab": {"tab_id": "w4:t9", "panes": [{"pane_id": "w4:p9"}]}}}
+def test_non_integer_protocol_raises_herdr_error():
+    run = Recorder(["server:\n  protocol: banana\n"])
+    with pytest.raises(HerdrError, match="non-integer protocol"):
+        HerdrClient(runner=run).protocol()
+
+
+def test_valid_json_that_is_not_an_object_raises_herdr_error():
+    """A list/string/number parses fine, then explodes at the first .get().
+    Callers catch HerdrError only, so it must be converted here."""
+    for payload in ("[1, 2, 3]", '"a string"', "42"):
+        with pytest.raises(HerdrError, match="expected object"):
+            HerdrClient(runner=Recorder([payload])).pane_list()
+
+
+def test_non_object_result_raises_herdr_error():
+    with pytest.raises(HerdrError, match="result is not an object"):
+        HerdrClient(runner=Recorder(['{"result": [1, 2]}'])).workspace_labels()
+
+
+def test_workspace_entry_missing_id_is_skipped_not_raised():
+    payload = {"result": {"workspaces": [
+        {"workspace_id": "w3", "label": "clients"},
+        {"label": "orphan with no id"},
+    ]}}
+    labels = HerdrClient(runner=Recorder([json.dumps(payload)])).workspace_labels()
+    assert labels == {"w3": "clients"}
+
+
+def test_tab_create_raises_when_root_pane_is_not_an_object():
+    with pytest.raises(HerdrError, match="no root pane"):
+        HerdrClient(runner=Recorder(['{"result": {"root_pane": "nope"}}'])).tab_create(
+            "/tmp/repo", "Some task"
+        )
+
+
+def test_command_argv_matches_verified_shapes():
+    """These shapes were verified against live herdr 0.8.0. Pin them so a refactor
+    cannot silently drift from the server's actual interface."""
+    run = Recorder(["", "", '{"result": {"root_pane": {"pane_id": "w9:p9"}}}'])
+    client = HerdrClient(runner=run)
+    client.pane_close("w1:p1")
+    client.pane_run("w1:p1", ["claude", "--resume", "u-1"])
+    client.tab_create("/tmp/repo", "Some task")
+    assert run.calls[0] == ["herdr", "pane", "close", "w1:p1"]
+    assert run.calls[1] == ["herdr", "pane", "run", "w1:p1", "claude", "--resume", "u-1"]
+    assert run.calls[2] == ["herdr", "tab", "create", "--cwd", "/tmp/repo",
+                            "--label", "Some task", "--focus"]
+
+
+def test_tab_create_returns_root_pane_id():
+    """Payload copied from a real `herdr tab create` response (protocol 19).
+    The pane lives under result.root_pane; result.tab carries no pane list."""
+    payload = {"id": "cli:tab:create", "result": {
+        "root_pane": {"pane_id": "w4:p9", "tab_id": "w4:t9", "workspace_id": "w4",
+                      "terminal_id": "term_abc", "cwd": "/private/tmp",
+                      "agent_status": "unknown", "revision": 0},
+        "tab": {"tab_id": "w4:t9", "label": "Some task", "workspace_id": "w4",
+                "pane_count": 1},
+        "type": "tab_created"}}
     client = HerdrClient(runner=Recorder([json.dumps(payload)]))
     assert client.tab_create("/tmp/repo", "Some task") == "w4:p9"
+
+
+def test_tab_create_raises_when_no_root_pane():
+    payload = {"result": {"tab": {"tab_id": "w4:t9"}, "type": "tab_created"}}
+    client = HerdrClient(runner=Recorder([json.dumps(payload)]))
+    with pytest.raises(HerdrError):
+        client.tab_create("/tmp/repo", "Some task")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -884,12 +1022,30 @@ class HerdrClient:
     def _json(self, *args: str) -> dict:
         raw = self._text(*args)
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except ValueError as exc:
             raise HerdrError(f"herdr {' '.join(args)} returned non-JSON: {raw[:200]!r}") from exc
+        # Valid JSON that is a list/string/number would sail through and raise
+        # AttributeError at the first .get(). Callers catch HerdrError only.
+        if not isinstance(parsed, dict):
+            raise HerdrError(
+                f"herdr {' '.join(args)} returned {type(parsed).__name__}, expected object"
+            )
+        return parsed
+
+    def _result(self, *args: str) -> dict:
+        """Fetch a command's `result` object, guaranteeing it is a dict."""
+        node = self._json(*args).get("result", {})
+        if not isinstance(node, dict):
+            raise HerdrError(f"herdr {' '.join(args)}: result is not an object")
+        return node
 
     def protocol(self) -> int:
-        """Parse the protocol line from the `server:` block of `herdr status`."""
+        """Parse the protocol line from the `server:` block of `herdr status`.
+
+        Both the `client:` and `server:` blocks carry a `protocol:` line; only the
+        server's governs compatibility.
+        """
         text = self._text("status")
         in_server = False
         for line in text.splitlines():
@@ -899,18 +1055,32 @@ class HerdrClient:
             if line and not line[0].isspace():
                 in_server = False
             if in_server and "protocol:" in line:
-                return int(line.split("protocol:")[1].strip())
+                value = line.split("protocol:")[1].strip()
+                try:
+                    return int(value)
+                except ValueError as exc:
+                    raise HerdrError(
+                        f"herdr status reported non-integer protocol {value!r}"
+                    ) from exc
         raise HerdrError("could not determine herdr server protocol")
 
     def pane_list(self) -> list[Pane]:
-        return parse_pane_list(self._json("pane", "list"))
+        # parse_pane_list accepts a bare {"panes": [...]} object as well as the envelope.
+        return parse_pane_list(self._result("pane", "list"))
 
     def snapshot(self) -> dict:
         return self._json("api", "snapshot")
 
     def workspace_labels(self) -> dict[str, str]:
-        node = self._json("workspace", "list").get("result", {})
-        return {w["workspace_id"]: w.get("label", "") for w in node.get("workspaces", [])}
+        # Malformed entries are skipped rather than fatal, consistent with
+        # load_state: a missing label only costs a manifest the workspace's
+        # display name, while raising would kill the whole unattended tick.
+        node = self._result("workspace", "list")
+        out: dict[str, str] = {}
+        for w in node.get("workspaces", []):
+            if isinstance(w, dict) and w.get("workspace_id"):
+                out[w["workspace_id"]] = w.get("label", "")
+        return out
 
     def pane_read(self, pane_id: str, lines: int) -> str:
         return self._text(
@@ -922,12 +1092,19 @@ class HerdrClient:
         self._text("pane", "close", pane_id)
 
     def tab_create(self, cwd: str, label: str) -> str:
-        node = self._json("tab", "create", "--cwd", cwd, "--label", label, "--focus")
-        tab = node.get("result", {}).get("tab", {})
-        panes = tab.get("panes") or []
-        if not panes:
-            raise HerdrError("tab create returned no pane")
-        return panes[0]["pane_id"]
+        """Return the pane_id of the new tab's root pane.
+
+        Shape verified against live herdr 0.8.0 (protocol 19): the response is
+        {"result": {"root_pane": {...,"pane_id": "w3:pC"}, "tab": {...}, "type":
+        "tab_created"}}. Note `result.tab` carries NO pane list — the pane lives
+        only under `result.root_pane`.
+        """
+        node = self._result("tab", "create", "--cwd", cwd, "--label", label, "--focus")
+        root = node.get("root_pane")
+        pane_id = root.get("pane_id") if isinstance(root, dict) else None
+        if not pane_id:
+            raise HerdrError("tab create returned no root pane")
+        return pane_id
 
     def pane_run(self, pane_id: str, command: list[str]) -> None:
         self._text("pane", "run", pane_id, *command)
@@ -957,6 +1134,7 @@ class FakeHerdrClient:
         self.fail_read: set[str] = set()
         self.fail_close: set[str] = set()
         self.empty_read: set[str] = set()
+        self.fail_run: bool = False
         # Observations:
         self.closed: list[str] = []
         self.reads: list[tuple[str, int]] = []
@@ -994,6 +1172,8 @@ class FakeHerdrClient:
         return self.next_pane_id
 
     def pane_run(self, pane_id: str, command: list[str]) -> None:
+        if self.fail_run:
+            raise HerdrError(f"simulated run failure for {pane_id}")
         self.ran.append((pane_id, command))
 ```
 
@@ -1028,8 +1208,11 @@ failed read never results in a close.
 Create `tests/test_archive.py`:
 
 ```python
+import builtins
 import json
+import stat
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from attic.archive import Archiver, make_archive_id, slugify
 from attic.policy import Archive
@@ -1071,6 +1254,17 @@ def test_archive_id_disambiguates_collisions():
     assert make_archive_id(NOW, "Some Task", existing) == "20260813T154700Z-some-task-2"
 
 
+def test_archive_is_owner_readable_only(tmp_path):
+    """Scrollback captures whatever was on screen — echoed tokens, .env dumps,
+    connection strings. Default umask would make it world-readable."""
+    home, client, action = setup(tmp_path)
+    path = Archiver(home, client).archive(action, "wh dev", NOW)
+    assert path is not None
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    assert stat.S_IMODE((path / "scrollback.txt").stat().st_mode) == 0o600
+    assert stat.S_IMODE((path / "manifest.json").stat().st_mode) == 0o600
+
+
 def test_archive_writes_scrollback_and_manifest(tmp_path):
     home, client, action = setup(tmp_path)
     path = Archiver(home, client).archive(action, "wh dev", NOW)
@@ -1086,6 +1280,7 @@ def test_archive_writes_scrollback_and_manifest(tmp_path):
     assert m["idle_since"] == "2026-08-13T10:47:00Z"
     assert m["scrollback_lines"] == 2
     assert m["resume"] == "cd /tmp/repo && claude --resume u-1"
+    assert m["resume_argv"] == ["claude", "--resume", "u-1"]
 
 
 def test_archive_sizes_read_from_pane_scroll_rows(tmp_path):
@@ -1106,6 +1301,27 @@ def test_empty_read_is_treated_as_failure(tmp_path):
     home, client, action = setup(tmp_path)
     client.empty_read.add("w4:p2")
     assert Archiver(home, client).archive(action, "wh dev", NOW) is None
+    # Same assertion as the failed-read sibling: a regression that moved the empty
+    # check after the first write would otherwise slip through.
+    assert list(home.archive_dir.glob("2026*")) == []
+    assert client.closed == []
+
+
+def test_manifest_write_failure_leaves_no_orphan_directory(tmp_path):
+    """Scrollback written, manifest not: the pane correctly survives, but without
+    cleanup the directory is invisible to `attic list` AND immune to prune_archives
+    (both skip manifest-less dirs), so it would accumulate forever."""
+    home, client, action = setup(tmp_path)
+    real_open = builtins.open
+
+    def flaky_open(path, *a, **k):
+        if str(path).endswith("manifest.json"):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **k)
+
+    with mock.patch("attic.archive.open", flaky_open, create=True):
+        assert Archiver(home, client).archive(action, "wh dev", NOW) is None
+    assert list(home.archive_dir.iterdir()) == []
     assert client.closed == []
 
 
@@ -1114,6 +1330,17 @@ def test_archive_never_closes_the_pane_itself(tmp_path):
     home, client, action = setup(tmp_path)
     Archiver(home, client).archive(action, "wh dev", NOW)
     assert client.closed == []
+
+
+def test_archive_survives_dense_unicode_scrollback(tmp_path):
+    """Scrollback is full of box drawing, spinners and emoji. launchd starts jobs
+    with no LANG, so a locale-derived encoding differs from the shell's — guessing
+    wrong raises UnicodeEncodeError and every archive fails silently forever."""
+    home, client, action = setup(tmp_path)
+    client.scrollback = "◐ working… ╭───╮ │ ✳ │ ╰───╯ 🔧 café\n"
+    path = Archiver(home, client).archive(action, "wh dev", NOW)
+    assert path is not None
+    assert (path / "scrollback.txt").read_text(encoding="utf-8") == client.scrollback
 
 
 def test_append_index_is_one_json_object_per_line(tmp_path):
@@ -1154,6 +1381,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -1180,7 +1408,15 @@ def make_archive_id(now: datetime, title: str, existing: set[str]) -> str:
 
 
 def _write_fsynced(path: Path, text: str) -> None:
-    with open(path, "w") as fh:
+    # encoding is explicit, not locale-derived: scrollback is dense Unicode (box
+    # drawing, spinners, emoji) and launchd starts jobs with no LANG set, so the
+    # default encoding under the timer differs from the one in your shell. Guessing
+    # wrong raises UnicodeEncodeError, and every archive silently fails forever.
+    with open(path, "w", encoding="utf-8") as fh:
+        # Tighten before any content lands. Scrollback captures whatever was on a
+        # developer's screen — echoed tokens, .env dumps, connection strings — so
+        # these files are owner-only, not default-umask world-readable.
+        os.chmod(path, 0o600)
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
@@ -1222,11 +1458,20 @@ class Archiver:
             "idle_since": iso(action.idle_since),
             "archived_at": iso(now),
             "scrollback_lines": len(scrollback.splitlines()),
+            # Two forms on purpose. `resume` is for humans to read and paste from
+            # `attic show`. `resume_argv` is what `attic restore` executes verbatim:
+            # recording the exact tokens at archive time is what keeps an old archive
+            # self-describing if the agent CLI's flags change later. Reconstructing
+            # at restore time would silently apply TODAY's flags to an OLD session.
             "resume": f"cd {pane.cwd} && claude --resume {pane.session_uuid}",
+            "resume_argv": ["claude", "--resume", pane.session_uuid],
         }
 
+        created = False
         try:
             path.mkdir(parents=True)
+            os.chmod(path, 0o700)   # owner-only: this directory holds raw scrollback
+            created = True
             _write_fsynced(path / "scrollback.txt", scrollback)
             _write_fsynced(path / "manifest.json", json.dumps(manifest, indent=2))
             dir_fd = os.open(path, os.O_RDONLY)
@@ -1235,12 +1480,20 @@ class Archiver:
             finally:
                 os.close(dir_fd)
         except OSError:
+            # A partial archive (scrollback written, manifest not) is invisible to
+            # `attic list` AND immune to prune_archives — both skip manifest-less
+            # directories — so it would accumulate forever in a tool whose job is
+            # reclaiming resources. Only remove a directory THIS call created; a
+            # FileExistsError means the directory was someone else's.
+            if created:
+                shutil.rmtree(path, ignore_errors=True)
             return None
         return path
 
     def append_index(self, entry: dict) -> None:
         self.home.ensure()
-        with open(self.home.index_path, "a") as fh:
+        with open(self.home.index_path, "a", encoding="utf-8") as fh:
+            os.chmod(self.home.index_path, 0o600)
             fh.write(json.dumps(entry) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -1275,7 +1528,8 @@ Create `tests/test_inventory.py`:
 
 ```python
 import json
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 
 from attic.inventory import append_inventory, prune_archives, prune_inventory
 from attic.store import AtticHome
@@ -1340,11 +1594,69 @@ def test_prune_archives_uses_manifest_archived_at(tmp_path):
     assert fresh.exists()
 
 
-def test_prune_archives_skips_dirs_without_manifest(tmp_path):
+def test_prune_archives_spares_recent_dirs_without_manifest(tmp_path):
+    """A freshly-created manifest-less dir may be an in-flight write. Never touch it."""
     home = AtticHome(tmp_path)
     home.ensure()
     (home.archive_dir / "20260101T000000Z-broken").mkdir()
     assert prune_archives(home, NOW, retention_days=1) == []
+    assert (home.archive_dir / "20260101T000000Z-broken").exists()
+
+
+def test_malformed_manifests_never_raise_and_fall_back_to_mtime(tmp_path):
+    """A manifest we cannot trust is treated as no manifest: mtime-gated, never fatal.
+    prune_archives is the only irreversible operation here and it runs unattended —
+    an exception mid-loop aborts every remaining directory in that run."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    payloads = {
+        "a-list": "[]",
+        "b-string": '"x"',
+        "c-number": "42",
+        "d-nonstring-stamp": '{"archived_at": 12345}',
+        "e-unparseable-stamp": '{"archived_at": "not a date"}',
+        "f-naive-stamp": '{"archived_at": "2026-01-01T00:00:00"}',
+        "g-missing-key": "{}",
+        "h-not-json": "{not json",
+    }
+    for name, payload in payloads.items():
+        d = home.archive_dir / f"20260101T000000Z-{name}"
+        d.mkdir()
+        (d / "manifest.json").write_text(payload, encoding="utf-8")
+        stamp = (NOW - timedelta(days=200)).timestamp()
+        os.utime(d, (stamp, stamp))
+    removed = prune_archives(home, NOW, retention_days=30)
+    assert len(removed) == len(payloads)
+    assert list(home.archive_dir.iterdir()) == []
+
+
+def test_malformed_manifest_within_retention_is_spared(tmp_path):
+    """An untrustworthy manifest must not shorten a directory's life."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    d = home.archive_dir / "20260812T000000Z-bad"
+    d.mkdir()
+    (d / "manifest.json").write_text("[]", encoding="utf-8")
+    assert prune_archives(home, NOW, retention_days=30) == []
+    assert d.exists()
+
+
+def test_prune_reclaims_manifest_less_dirs_past_retention(tmp_path):
+    """Orphaned partial archives are invisible to `attic list`, so without this they
+    would be immortal — accumulating forever in a tool built to reclaim resources."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    old = home.archive_dir / "20260101T000000Z-orphan"
+    old.mkdir()
+    (old / "scrollback.txt").write_text("partial write, no manifest\n", encoding="utf-8")
+    os.utime(old, (0, (NOW - timedelta(days=200)).timestamp()))
+    fresh = home.archive_dir / "20260812T000000Z-orphan"
+    fresh.mkdir()
+    (fresh / "scrollback.txt").write_text("partial write, no manifest\n", encoding="utf-8")
+    removed = prune_archives(home, NOW, retention_days=30)
+    assert [p.name for p in removed] == ["20260101T000000Z-orphan"]
+    assert not old.exists()
+    assert fresh.exists()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1414,21 +1726,54 @@ def prune_inventory(home: AtticHome, now: datetime, retention_days: int) -> list
     return removed
 
 
+def _archived_at(path: Path) -> datetime | None:
+    """The manifest's `archived_at`, or None if the manifest is missing, unreadable,
+    or malformed in any way.
+
+    A manifest we cannot trust is treated as no manifest at all. Every rejection
+    below is a real crash this would otherwise cause inside the project's only
+    irreversible operation, running unattended:
+      - non-dict JSON -> data["archived_at"] raises TypeError
+      - non-str stamp -> .replace() raises AttributeError
+      - naive stamp   -> comparing naive to aware raises TypeError at the caller
+    """
+    try:
+        data = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stamp = data.get("archived_at")
+    if not isinstance(stamp, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def prune_archives(home: AtticHome, now: datetime, retention_days: int) -> list[Path]:
     cutoff = now - timedelta(days=retention_days)
     removed: list[Path] = []
     if not home.archive_dir.exists():
         return removed
     for path in sorted(p for p in home.archive_dir.iterdir() if p.is_dir()):
-        manifest = path / "manifest.json"
-        try:
-            data = json.loads(manifest.read_text())
-            archived_at = datetime.fromisoformat(data["archived_at"].replace("Z", "+00:00"))
-        except (OSError, ValueError, KeyError):
-            continue
-        if archived_at < cutoff:
-            shutil.rmtree(path)
-            removed.append(path)
+        stamp = _archived_at(path)
+        if stamp is None:
+            # No usable manifest: an orphaned partial archive, invisible to
+            # `attic list` and otherwise immortal. Reclaim it, but only once its
+            # mtime is past retention — nothing legitimate is manifest-less and
+            # 30 days old, and the age bar guarantees an in-flight write is never
+            # touched.
+            try:
+                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            except OSError:
+                continue
+        if stamp < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+            if not path.exists():       # report only what actually went away
+                removed.append(path)
     return removed
 ```
 
@@ -1455,7 +1800,9 @@ git commit -m "feat: add inventory snapshots and retention pruning"
 - Consumes: everything from Tasks 1-6
 - Produces: `run_tick(home, client, now, dry_run: bool = False) -> TickResult`; `TickResult` frozen dataclass (`actions: list[Action]`, `archived: list[str]` (archive ids), `reaped: bool`, `reason: str`), plus `main(argv: list[str] | None = None) -> int`
 
-**Ordering contract (do not reorder):** snapshot → prune → guards → `update_state` → `save_state` → `decide` → per-action archive → close.
+**Ordering contract (do not reorder):** snapshot → prune → `update_state` → `save_state` → evaluate guards → `decide` → per-action archive → close.
+
+State updates run BEFORE the guards deliberately: the idle clock must keep advancing while paused, or `reap --dry-run` during the soak would report durations that bear no relation to how long a pane has actually been idle. Guards gate execution, never observation.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1464,8 +1811,10 @@ Create `tests/test_tick.py`:
 ```python
 import json
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
-from attic.cli import run_tick
+from attic.archive import Archiver
+from attic.cli import _print_verdicts, main, run_tick
 from attic.store import AtticHome, PaneState
 from fakes import FakeHerdrClient
 from test_policy import mkpane
@@ -1517,6 +1866,46 @@ def test_pause_file_blocks_reaping_but_not_inventory(tmp_path):
     assert (home.inventory_dir / "2026-08-13.jsonl").exists()
 
 
+def test_dry_run_shows_verdicts_even_while_paused(tmp_path):
+    """The soak depends on this. `attic` installs PAUSED, and the user reads
+    `attic reap --dry-run` for days before granting reaping authority by removing
+    PAUSE. If the pause guard short-circuited before decide(), that output would be
+    empty and the entire trust-building procedure would be impossible to perform."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    client = FakeHerdrClient(panes=[pane])
+    result = run_tick(home, client, NOW, dry_run=True)
+    assert len(result.actions) == 1
+    assert result.reason == "paused"
+    assert client.closed == []
+    assert list(home.archive_dir.glob("2026*")) == []
+
+
+def test_paused_tick_still_reports_what_it_would_have_done(tmp_path):
+    """A paused tick computes verdicts so the log can say what it declined to do."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    client = FakeHerdrClient(panes=[pane])
+    result = run_tick(home, client, NOW)
+    assert result.reaped is False
+    assert result.reason == "paused"
+    assert len(result.actions) == 1
+    assert client.closed == []
+
+
+def test_idle_clock_advances_while_paused(tmp_path):
+    """Guards gate execution, never observation. If the clock froze during a pause,
+    dry-run durations during the soak would bear no relation to reality."""
+    pane = mkpane("w4:p2")
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.pause_path.touch()
+    run_tick(home, FakeHerdrClient(panes=[pane]), NOW)
+    assert home.load_state()[pane.terminal_id].first_idle_at == "2026-08-13T15:47:00Z"
+
+
 def test_protocol_mismatch_blocks_reaping(tmp_path):
     pane = mkpane("w4:p2")
     home = home_with_clock(tmp_path, [pane])
@@ -1558,6 +1947,42 @@ def test_close_failure_keeps_archive_and_marks_it(tmp_path):
     assert next(home.archive_dir.glob("2026*")).exists()
 
 
+def test_dry_run_output_states_why_reaping_is_disabled(capsys, tmp_path):
+    """The soak has the user reading this for days while attic is PAUSED. Without
+    the banner, a paused run looks identical to a run with nothing to do."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    home.pause_path.touch()
+    result = run_tick(home, FakeHerdrClient(panes=[pane]), NOW, dry_run=True)
+    _print_verdicts(result)
+    out = capsys.readouterr().out
+    assert "reaping disabled: paused" in out
+    assert "ARCHIVE" in out
+
+
+def test_main_returns_zero_when_setup_itself_fails(monkeypatch, capsys):
+    """A crashing timer stops protecting the user, and under launchd the crash
+    produces no visible symptom. Even an unwritable ATTIC_HOME must exit 0."""
+    def boom():
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr("attic.cli.AtticHome.default", staticmethod(boom))
+    assert main(["tick"]) == 0
+
+
+def test_index_append_failure_after_close_does_not_propagate(tmp_path):
+    """The archive and manifest are already durable and `attic list` reads manifests
+    from disk, so the session stays restorable; only the index loses an entry."""
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+    client = FakeHerdrClient(panes=[pane])
+    with mock.patch.object(Archiver, "append_index", side_effect=OSError(28, "No space")):
+        result = run_tick(home, client, NOW)
+    assert result.reaped is True
+    assert client.closed == ["w4:p2"]
+    assert next(home.archive_dir.glob("2026*")).exists()
+
+
 def test_herdr_unavailable_is_survivable(tmp_path):
     class Dead(FakeHerdrClient):
         def pane_list(self):
@@ -1596,13 +2021,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .archive import Archiver
 from .herdr import HerdrClient, HerdrError
 from .inventory import append_inventory, prune_archives, prune_inventory
-from .policy import Action, Archive, Skip, decide, update_state
+from .policy import Action, Archive, decide, update_state
 from .store import AtticHome
 
 log = logging.getLogger("attic")
@@ -1646,23 +2072,34 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
     state = update_state(panes, home.load_state(), now)
     home.save_state(state)
 
+    # Determine whether reaping is permitted, but do NOT return yet: verdicts are
+    # computed either way. `attic` installs PAUSED and the soak procedure is "read
+    # `attic reap --dry-run` for days, then grant authority by removing PAUSE" — so
+    # short-circuiting before decide() would make that output empty and the whole
+    # trust-building step impossible.
+    blocked: str | None = None
     if home.is_paused():
-        log.info("PAUSE present, reaping disabled")
-        return TickResult(reason="paused")
-
-    try:
-        protocol = client.protocol()
-    except HerdrError as exc:
-        return TickResult(reason=f"herdr protocol unreadable: {exc}")
-    if protocol != config.herdr_protocol:
-        log.warning(
-            "herdr protocol %s != pinned %s, reaping disabled", protocol, config.herdr_protocol
-        )
-        return TickResult(reason=f"protocol mismatch: {protocol} != {config.herdr_protocol}")
+        blocked = "paused"
+    else:
+        try:
+            protocol = client.protocol()
+        except HerdrError as exc:
+            blocked = f"herdr protocol unreadable: {exc}"
+        else:
+            if protocol != config.herdr_protocol:
+                log.warning(
+                    "herdr protocol %s != pinned %s, reaping disabled",
+                    protocol, config.herdr_protocol,
+                )
+                blocked = f"protocol mismatch: {protocol} != {config.herdr_protocol}"
 
     actions = decide(panes, state, now, config)
+
     if dry_run:
-        return TickResult(actions=actions, reason="dry-run")
+        return TickResult(actions=actions, reason=blocked or "dry-run")
+    if blocked:
+        log.info("reaping disabled: %s", blocked)
+        return TickResult(actions=actions, reason=blocked)
 
     archiver = Archiver(home, client)
     archived: list[str] = []
@@ -1690,7 +2127,14 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
             "archived_at": now.isoformat().replace("+00:00", "Z"),
             "close_failed": close_failed,
         }
-        archiver.append_index(entry)
+        try:
+            archiver.append_index(entry)
+        except OSError as exc:
+            # The archive directory and its manifest are already durable, and
+            # `attic list` reads manifests from disk rather than this index, so the
+            # session stays discoverable and restorable. Only the append-only log
+            # loses this entry and its close_failed marker.
+            log.error("archived %s but index append failed: %s", pane.pane_id, exc)
         archived.append(path.name)
         log.info("archived %s as %s", pane.pane_id, path.name)
 
@@ -1698,6 +2142,10 @@ def run_tick(home: AtticHome, client, now: datetime, dry_run: bool = False) -> T
 
 
 def _print_verdicts(result: TickResult) -> None:
+    # The soak has the user reading this output for days while attic is PAUSED.
+    # Without this banner a paused run looks identical to a run with nothing to do.
+    if result.reason and result.reason != "dry-run":
+        print(f"reaping disabled: {result.reason} — showing what would happen anyway\n")
     for action in result.actions:
         if isinstance(action, Archive):
             print(f"ARCHIVE  {action.pane.pane_id:<8} {action.pane.title}")
@@ -1713,14 +2161,25 @@ def main(argv: list[str] | None = None) -> int:
     reap.add_argument("--dry-run", action="store_true", help="print verdicts, change nothing")
 
     args = parser.parse_args(argv)
-    home = AtticHome.default()
-    _setup_logging(home)
+
+    try:
+        home = AtticHome.default()
+        _setup_logging(home)
+    except Exception:
+        # Logging is not up yet, so stderr is the only channel available. Still
+        # return 0: a crashing timer stops protecting the user, and under launchd
+        # the crash itself produces no visible symptom.
+        traceback.print_exc(file=sys.stderr)
+        return 0
+
     now = datetime.now(timezone.utc)
 
     try:
         if args.command == "tick":
             result = run_tick(home, HerdrClient(), now)
-            print(f"archived {len(result.archived)} pane(s); {result.reason}")
+            summary = f"archived {len(result.archived)} pane(s); {result.reason}"
+            log.info(summary)          # launchd stdout may go nowhere; the log file persists
+            print(summary)
         elif args.command == "reap":
             result = run_tick(home, HerdrClient(), now, dry_run=args.dry_run)
             _print_verdicts(result)
@@ -1814,6 +2273,33 @@ def test_resolve_rejects_unknown_id(tmp_path):
         resolve_id(home, "nope")
 
 
+def test_list_survives_a_manifest_with_a_null_timestamp(tmp_path):
+    """One null archived_at makes sorted() raise TypeError, which main() swallows —
+    so `attic list` would print nothing and exit 0, hiding EVERY archive rather than
+    the one corrupt entry. This is the recovery path; it must degrade per-record."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    make_archive(home, "20260812T000000Z-good", "Real session", "2026-08-12T00:00:00Z")
+    bad = home.archive_dir / "20260101T000000Z-bad"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text(
+        json.dumps({"id": "20260101T000000Z-bad", "title": "Bad", "archived_at": None}),
+        encoding="utf-8",
+    )
+    titles = [m["title"] for m in load_manifests(home)]
+    assert "Real session" in titles
+
+
+def test_exact_id_wins_over_a_longer_prefix_match(tmp_path):
+    """Two panes archived in the same second produce IDs where one is a prefix of the
+    other. Supplying a complete ID must never be reported as ambiguous."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    make_archive(home, "20260812T000000Z-a", "A", "2026-08-12T00:00:00Z")
+    make_archive(home, "20260812T000000Z-ab", "AB", "2026-08-12T00:00:01Z")
+    assert resolve_id(home, "20260812T000000Z-a")["title"] == "A"
+
+
 def test_format_list_includes_id_and_title(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -1859,11 +2345,28 @@ def load_manifests(home: AtticHome) -> list[dict]:
             continue
         data.setdefault("id", path.name)
         out.append(data)
-    return sorted(out, key=lambda m: m.get("archived_at", ""), reverse=True)
+    return sorted(out, key=_sort_key, reverse=True)
+
+
+def _sort_key(manifest: dict) -> str:
+    """Sort by archived_at, tolerating entries where it is absent or not a string.
+
+    A bare .get(default) is NOT enough: the default only applies when the key is
+    missing. A null or numeric value compares against the other entries' strings and
+    raises TypeError inside sorted(), which main() swallows — so `attic list` would
+    print nothing and exit 0, hiding EVERY archive rather than the one corrupt entry.
+    This is the recovery path; it must degrade per-record, never wholesale.
+    """
+    stamp = manifest.get("archived_at")
+    return stamp if isinstance(stamp, str) else ""
 
 
 def resolve_id(home: AtticHome, prefix: str) -> dict:
-    matches = [m for m in load_manifests(home) if m["id"].startswith(prefix)]
+    manifests = load_manifests(home)
+    for manifest in manifests:
+        if manifest["id"] == prefix:      # a complete ID is never ambiguous
+            return manifest
+    matches = [m for m in manifests if m["id"].startswith(prefix)]
     if not matches:
         raise LookupError(f"no archive matching {prefix!r}")
     if len(matches) > 1:
@@ -1908,7 +2411,12 @@ Add to the dispatch chain in `main`, after the `reap` branch:
             manifest = resolve_id(home, args.archive_id)
             print(json.dumps(manifest, indent=2))
             print("\n--- scrollback ---\n")
-            print((home.archive_dir / manifest["id"] / "scrollback.txt").read_text())
+            scrollback = home.archive_dir / manifest["id"] / "scrollback.txt"
+            try:
+                print(scrollback.read_text(encoding="utf-8"))
+            except OSError as exc:
+                # A partial archive still has a usable manifest and resume command.
+                print(f"(scrollback unavailable: {exc})", file=sys.stderr)
 ```
 
 Add `import json` to the top of `cli.py`.
@@ -1955,6 +2463,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from attic.cli import main
+from attic.herdr import HerdrError
 from attic.restore import restore
 from attic.store import AtticHome
 from fakes import FakeHerdrClient
@@ -1967,7 +2477,27 @@ def manifest(cwd: str) -> dict:
         "id": "20260812T000000Z-debug", "title": "Debug the thing",
         "cwd": cwd, "session_uuid": "u-1", "workspace": "wh dev",
         "resume": "cd X && claude --resume u-1",
+        "resume_argv": ["claude", "--resume", "u-1"],
     }
+
+
+def test_restore_runs_the_argv_recorded_at_archive_time(tmp_path):
+    """Not one rebuilt from today's code: if the agent CLI's flags change, an old
+    archive must still replay what actually worked when it was written."""
+    m = manifest(str(tmp_path))
+    m["resume_argv"] = ["claude", "--continue-session", "u-1"]   # a future flag
+    client = FakeHerdrClient()
+    restore(AtticHome(tmp_path), client, m, NOW)
+    assert client.ran == [("w9:p9", ["claude", "--continue-session", "u-1"])]
+
+
+def test_restore_falls_back_when_resume_argv_is_absent(tmp_path):
+    """Manifests written before resume_argv existed still restore."""
+    m = manifest(str(tmp_path))
+    del m["resume_argv"]
+    client = FakeHerdrClient()
+    restore(AtticHome(tmp_path), client, m, NOW)
+    assert client.ran == [("w9:p9", ["claude", "--resume", "u-1"])]
 
 
 def test_restore_creates_a_tab_and_runs_the_stored_resume(tmp_path):
@@ -2001,6 +2531,37 @@ def test_restore_is_non_destructive_and_logs_restored_at(tmp_path):
     assert entry["id"] == "20260812T000000Z-debug"
 
 
+def test_restore_names_the_pane_when_the_session_fails_to_start(tmp_path):
+    """A tab exists but nothing runs in it. The error must name the pane, or the user
+    is left with a stray tab they cannot account for and no sign a restore failed."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    client = FakeHerdrClient()
+    client.fail_run = True
+    with pytest.raises(HerdrError, match="w9:p9"):
+        restore(home, client, manifest(str(tmp_path)), NOW)
+    assert client.created_tabs                 # the tab really does exist
+    assert not home.index_path.exists()        # but nothing claims it was restored
+
+
+def test_restore_prints_the_manifest_when_cwd_is_gone(monkeypatch, capsys, tmp_path):
+    """Aborting is right, but the user needs to see WHAT was abandoned — especially
+    the resume string, which lets them recover by hand if the directory merely moved."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    data = {"id": "20260812T000000Z-x", "title": "T", "cwd": "/nonexistent/path",
+            "session_uuid": "u-1", "archived_at": "2026-08-12T00:00:00Z",
+            "resume": "cd /nonexistent/path && claude --resume u-1"}
+    d = home.archive_dir / data["id"]
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv("ATTIC_HOME", str(tmp_path))
+    assert main(["restore", "20260812T000000Z-x"]) == 0
+    err = capsys.readouterr().err
+    assert "cwd no longer exists" in err
+    assert "u-1" in err            # the manifest itself was shown, not just the message
+
+
 def test_restore_twice_yields_two_panes(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
@@ -2028,6 +2589,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .archive import Archiver
+from .herdr import HerdrError
 from .policy import iso
 from .store import AtticHome
 
@@ -2042,7 +2604,22 @@ def restore(home: AtticHome, client, manifest: dict, now: datetime) -> str:
         raise FileNotFoundError(f"cwd no longer exists: {cwd}")
 
     pane_id = client.tab_create(cwd, manifest.get("title", manifest["id"]))
-    client.pane_run(pane_id, ["claude", "--resume", manifest["session_uuid"]])
+
+    # Execute the argv recorded at archive time, not one rebuilt from today's code.
+    # The tab is already opened in `cwd`, so the manifest's display string keeps its
+    # redundant "cd ... &&" prefix for humans while this stays a clean token list.
+    argv = manifest.get("resume_argv")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        # Manifest predates resume_argv, or the field is corrupt.
+        argv = ["claude", "--resume", manifest["session_uuid"]]
+    try:
+        client.pane_run(pane_id, argv)
+    except HerdrError as exc:
+        # The tab exists but nothing is running in it. Name the pane, or the user is
+        # left with a stray tab they cannot account for and no idea a restore failed.
+        raise HerdrError(
+            f"opened tab {pane_id} but could not start the session: {exc}"
+        ) from exc
 
     Archiver(home, client).append_index({
         "id": manifest["id"],
@@ -2071,8 +2648,22 @@ Add to the dispatch chain:
 
 ```python
         elif args.command == "restore":
-            manifest = resolve_id(home, args.archive_id)
-            pane_id = restore_archive(home, HerdrClient(), manifest, now)
+            try:
+                manifest = resolve_id(home, args.archive_id)
+            except LookupError as exc:
+                print(str(exc), file=sys.stderr)
+                return 0
+            try:
+                pane_id = restore_archive(home, HerdrClient(), manifest, now)
+            except FileNotFoundError as exc:
+                # Show WHAT is being abandoned. The resume string in particular lets
+                # the user recover by hand if the directory merely moved.
+                print(str(exc), file=sys.stderr)
+                print(json.dumps(manifest, indent=2), file=sys.stderr)
+                return 0
+            except HerdrError as exc:
+                print(str(exc), file=sys.stderr)
+                return 0
             print(f"restored {manifest['id']} into {pane_id}")
 ```
 
@@ -2285,8 +2876,12 @@ See the design spec: `docs/superpowers/specs/2026-08-13-attic-herdr-agent-archiv
 1. Let inventory run for a few days: `attic list` stays empty, but
    `~/.attic/inventory/` fills up. Confirm it is capturing what you expect.
 2. Run `attic reap --dry-run` daily. Read every verdict. Confirm that nothing you
-   care about is ever marked `ARCHIVE`, especially anything `blocked`.
-3. When the verdicts look right, `rm ~/.attic/PAUSE`.
+   care about is ever marked `ARCHIVE`, especially anything `blocked`. Dry-run works
+   while paused and reports real idle durations — the clock keeps advancing during a
+   pause, so what you see is what would actually happen.
+3. When the verdicts look right, `rm ~/.attic/PAUSE`. Expect the first unpaused tick
+   to act immediately on panes the dry-run has been showing as `ARCHIVE` — they have
+   been genuinely idle the whole time, and the per-tick cap of 3 bounds the burst.
 4. After the first real archive, run `attic restore <id>` immediately and confirm the
    session resumes with its history intact.
 
