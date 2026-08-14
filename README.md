@@ -133,7 +133,7 @@ you sleep and is archived by the first tick of the morning. With it, the clock
 restarts when the window ends, so a session needs a full threshold of *waking*
 time before it becomes eligible:
 
-```
+```text
 21:00  goes idle
 22:00  window opens   → clock re-stamped every tick, nothing reaped
 08:00  window closes  → clock reads ~5 minutes old

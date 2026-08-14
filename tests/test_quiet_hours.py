@@ -37,7 +37,9 @@ def test_a_window_inside_one_day_also_works():
 
 
 @pytest.mark.parametrize("bad", ["", "22:00", "22:00-", "25:00-08:00",
-                                 "22:00-08:00-09:00", "10pm-8am", "08:00-08:00"])
+                                 "22:00-08:00-09:00", "10pm-8am", "08:00-08:00",
+                                 "22:00+02:00-08:00",   # offset makes one endpoint aware
+                                 22, 0, [1, 2], {"a": 1}])
 def test_malformed_windows_raise_rather_than_being_guessed_at(bad):
     """A misparsed window silently shifts when reaping happens by hours. Raising
     aborts the tick and archives nothing — the same direction iso() fails in."""
@@ -217,3 +219,45 @@ def test_evaluate_applies_quiet_hours_end_to_end(tmp_path):
     assert [type(a).__name__ for a in ev.actions] == ["Skip"]
     assert "overnight hours" in ev.actions[0].reason
     assert ev.state[pane.terminal_id].first_idle_at != stale, "clock was not reset"
+
+
+def test_a_non_string_quiet_hours_is_refused_not_guessed_at():
+    """load_config passes raw JSON straight into Config, so a number or list can
+    reach the policy. Previously 22 raised AttributeError out of run_tick's
+    "never raises" boundary, and 0 silently disabled the window entirely."""
+    now = at(2026, 8, 14, 23, 0)
+    for bad in (22, [1, 2], {"a": 1}):
+        with pytest.raises(ValueError, match="must be a string"):
+            in_quiet_hours(now, bad, CHI)
+    # 0 is falsey but is NOT a way to disable the window
+    with pytest.raises(ValueError):
+        in_quiet_hours(now, 0, CHI)
+    # None and "" remain the documented ways to disable it
+    assert not in_quiet_hours(now, None, CHI)
+    assert not in_quiet_hours(now, "", CHI)
+
+
+def test_an_offset_bearing_window_is_refused():
+    """time.fromisoformat accepts offsets, so "22:00+02:00-08:00" split on "-"
+    yields one aware and one naive endpoint and the comparison raises TypeError.
+    The window is local wall-clock by definition."""
+    with pytest.raises(ValueError, match="UTC offset"):
+        parse_quiet_hours("22:00+02:00-08:00")
+
+
+def test_a_malformed_config_skips_the_tick_instead_of_crashing(tmp_path):
+    """run_tick promises never to raise. A traceback here kills the launchd job
+    rather than skipping one tick, and archives nothing either way."""
+    import json
+
+    from attic.cli import run_tick
+    from attic.store import AtticHome
+    from fakes import FakeHerdrClient
+
+    home = AtticHome(tmp_path)
+    home.ensure()
+    home.config_path.write_text(json.dumps({"quiet_hours": 22}), encoding="utf-8")
+
+    result = run_tick(home, FakeHerdrClient(panes=[mkpane("w1:p1")]), datetime.now(UTC),
+                      projects_root=tmp_path / "projects")
+    assert "invalid configuration" in result.reason

@@ -60,6 +60,11 @@ def parse_quiet_hours(window: str) -> tuple[time, time]:
     get closed, which is the failure this module exists to avoid. Raising aborts
     the tick and archives nothing, matching iso()'s treatment of naive datetimes.
     """
+    if not isinstance(window, str):
+        # load_config passes raw JSON through, so a number or list can arrive
+        # here. Guessing at it either crashes the daemon or silently disables
+        # the window; both are worse than refusing.
+        raise ValueError(f"quiet_hours must be a string like '22:00-08:00', got {window!r}")
     parts = window.split("-")
     if len(parts) != 2:
         raise ValueError(f"quiet_hours must look like '22:00-08:00', got {window!r}")
@@ -68,6 +73,11 @@ def parse_quiet_hours(window: str) -> tuple[time, time]:
         end = time.fromisoformat(parts[1].strip())
     except ValueError as exc:
         raise ValueError(f"quiet_hours has an unparseable time: {window!r}") from exc
+    if start.tzinfo is not None or end.tzinfo is not None:
+        # time.fromisoformat accepts offsets, so "22:00+02:00-08:00" splits into
+        # one aware and one naive endpoint and the comparison below raises
+        # TypeError. The window is local wall-clock by definition.
+        raise ValueError(f"quiet_hours endpoints must not carry a UTC offset: {window!r}")
     if start == end:
         # Ambiguous: it could mean "never" or "always", and the two differ by
         # whether the tool ever reaps at all. Refuse instead of picking.
@@ -96,7 +106,7 @@ def in_quiet_hours(now: datetime, window: str | None, tz: tzinfo | None = None) 
     The window is start-inclusive and end-exclusive: 08:00 is already the working
     day, and treating it as quiet would keep resetting the clock after you sit down.
     """
-    if not window:
+    if window is None or window == "":
         return False
     start, end = parse_quiet_hours(window)
     local = now.astimezone(tz).time()
