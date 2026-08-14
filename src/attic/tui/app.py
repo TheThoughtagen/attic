@@ -12,7 +12,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
 
 from ..evaluate import evaluate
 from ..rows import activity_rows, attic_rows, fleet_rows
@@ -37,6 +37,7 @@ class AtticApp(App):
         Binding("ctrl+b", "page_up", "page up", show=False),
         Binding("R", "force_refresh", "refresh"),
         Binding("q", "quit", "quit"),
+        Binding(":", "open_command", "command"),
     ]
 
     def __init__(self, home: AtticHome, client, projects_root: Path | None = None) -> None:
@@ -55,6 +56,7 @@ class AtticApp(App):
                 yield DataTable(id="activity-table", cursor_type="row")
             with TabPane("Attic", id="attic"):
                 yield DataTable(id="attic-table", cursor_type="row")
+        yield Input(id="command", placeholder=":")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -64,6 +66,7 @@ class AtticApp(App):
             "at", "pane", "title", "verdict", "reason")
         self.query_one("#attic-table", DataTable).add_columns(
             "id", "archived", "workspace", "title")
+        self.query_one("#command", Input).display = False
         self.refresh_data()
         self.set_interval(REFRESH_SECONDS, self.refresh_data)
 
@@ -147,3 +150,36 @@ class AtticApp(App):
             if 0 <= wanted < len(order):
                 tabs.active = order[wanted]
         event.stop()
+
+    def action_open_command(self) -> None:
+        box = self.query_one("#command", Input)
+        box.display = True
+        box.value = ":"
+        box.focus()
+
+    def on_input_submitted(self, event) -> None:
+        from ..tui.commands import CommandContext, parse_command, run_command
+        box = self.query_one("#command", Input)
+        box.display = False
+        text = event.value
+        box.value = ""
+        self.set_focus(None)
+        try:
+            verb, args = parse_command(text)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if verb in ("q", "quit"):
+            self.exit()
+            return
+        table = self._table()
+        row_key = None
+        if table.row_count and table.cursor_row is not None:
+            row_key = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+        result = run_command(verb, args, CommandContext(
+            home=self.home, client=self.client,
+            tab=self.query_one(TabbedContent).active,
+            row_key=row_key, now=datetime.now(timezone.utc),
+            projects_root=self.projects_root))
+        self.notify(result.message, severity="information" if result.ok else "error")
+        self.refresh_data()
