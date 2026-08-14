@@ -250,9 +250,10 @@ def test_a_malformed_config_skips_the_tick_instead_of_crashing(tmp_path):
     rather than skipping one tick, and archives nothing either way."""
     import json
 
+    from fakes import FakeHerdrClient
+
     from attic.cli import run_tick
     from attic.store import AtticHome
-    from fakes import FakeHerdrClient
 
     home = AtticHome(tmp_path)
     home.ensure()
