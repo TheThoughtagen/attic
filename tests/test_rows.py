@@ -93,6 +93,20 @@ def test_activity_rows_skip_a_corrupt_line_without_losing_the_others(tmp_path):
     assert [r.title for r in activity_rows(home)] == ["Good"]
 
 
+def test_activity_rows_survive_a_non_list_panes_field(tmp_path):
+    """`{"panes": 5}` parses as valid JSON and then raises at the loop. One bad
+    line must not destroy the view — it is what someone reads when they are
+    already trying to work out what went wrong."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    (home.inventory_dir / "2026-08-13.jsonl").write_text(
+        json.dumps({"at": "2026-08-13T09:00:00Z", "panes": 5}) + "\n" +
+        json.dumps({"at": "2026-08-13T10:00:00Z", "panes": [
+            {"pane_id": "w1:p1", "title": "Good", "verdict": "skip", "reason": "x"}]}) + "\n",
+        encoding="utf-8")
+    assert [r.title for r in activity_rows(home)] == ["Good"]
+
+
 def test_attic_rows_are_newest_first(tmp_path):
     home = AtticHome(tmp_path)
     home.ensure()
