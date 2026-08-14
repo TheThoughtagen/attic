@@ -23,7 +23,7 @@ def test_encoding_matches_claude_code_layout(tmp_path):
     """Verified against nine live sessions: every "/" and "." becomes "-"."""
     assert project_dir("/Users/you", tmp_path).name == "-Users-you"
     assert project_dir("/Users/p/data/projects/analytics", tmp_path).name == (
-        "-Users-p-data-projects-Reporting"
+        "-Users-p-data-projects-analytics"
     )
     # A dotted path is the case that breaks a naive "/"-only replacement.
     assert project_dir("/Users/p/.attic-stage/work", tmp_path).name == (
