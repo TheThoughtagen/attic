@@ -238,7 +238,7 @@ class AtticApp(App):
         # and "[b]" silently swallows the text around it.
         panel.update(
             f"[b]{escape(pane.pane_id)}[/b]\n"
-            f"summary   {escape(pane.title or '—')}\n"
+            f"summary   {escape((pane.title or '').strip() or '—')}\n"
             f"dir       {escape(where)}\n"
             f"repo      {escape(repo)}\n"
             f"session   {escape(size)} · {escape(msgs)}\n"

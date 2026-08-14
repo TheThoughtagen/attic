@@ -440,3 +440,18 @@ async def test_the_panel_shows_the_untruncated_summary(tmp_path):
         await pilot.press("i")
         await pilot.pause()
         assert "summary   Some task" in str(app.query_one("#detail").render())
+
+
+async def test_a_blank_title_falls_back_to_a_dash(tmp_path):
+    """A whitespace-only title is truthy, so `title or "—"` rendered an empty
+    line rather than the fallback."""
+    home = AtticHome(tmp_path)
+    home.ensure()
+    pane = mkpane("w4:p2")
+    pane = type(pane)(**{**pane.__dict__, "title": "   "})
+    app = AtticApp(home, FakeHerdrClient(panes=[pane]), projects_root=tmp_path / "projects")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert "summary   —" in str(app.query_one("#detail").render())
