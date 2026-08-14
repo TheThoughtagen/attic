@@ -1,15 +1,15 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
+from fakes import FakeHerdrClient
+from test_policy import mkpane
 
 from attic.resumable import session_path
 from attic.store import AtticHome
 from attic.tui.commands import CommandContext, parse_command, run_command
-from fakes import FakeHerdrClient
-from test_policy import mkpane
 
-NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=UTC)
 
 
 def make_resumable(root, panes):

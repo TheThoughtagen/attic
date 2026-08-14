@@ -1,4 +1,3 @@
-import pytest
 
 from attic.tui.motions import MotionState
 

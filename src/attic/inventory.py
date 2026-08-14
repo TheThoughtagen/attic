@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import Pane
@@ -60,7 +60,7 @@ def prune_inventory(home: AtticHome, now: datetime, retention_days: int) -> list
         return removed
     for path in sorted(home.inventory_dir.glob("*.jsonl")):
         try:
-            day = datetime.strptime(path.stem, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            day = datetime.strptime(path.stem, "%Y-%m-%d").replace(tzinfo=UTC)
         except ValueError:
             continue
         if day < cutoff:
@@ -90,7 +90,7 @@ def _archived_at(path: Path) -> datetime | None:
     if not isinstance(stamp, str):
         return None
     try:
-        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(stamp)
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
@@ -110,7 +110,7 @@ def prune_archives(home: AtticHome, now: datetime, retention_days: int) -> list[
             # 30 days old, and the age bar guarantees an in-flight write is never
             # touched.
             try:
-                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC)
             except OSError:
                 continue
         if stamp < cutoff:

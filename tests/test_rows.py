@@ -1,13 +1,14 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
+
+from test_policy import mkpane
 
 from attic.evaluate import Evaluation
 from attic.policy import Archive, Skip
 from attic.rows import activity_rows, attic_rows, fleet_rows, humanize
 from attic.store import AtticHome, Config, PaneState
-from test_policy import mkpane
 
-NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=UTC)
 
 
 def test_humanize_reads_naturally():

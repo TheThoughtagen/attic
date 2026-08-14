@@ -1,12 +1,13 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from fakes import FakeHerdrClient
+from test_policy import mkpane
 
 from attic.evaluate import Evaluation, evaluate, gate_on_resumability
 from attic.policy import Archive, Skip
 from attic.store import AtticHome, PaneState
-from fakes import FakeHerdrClient
-from test_policy import mkpane
 
-NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=UTC)
 
 
 def home_with_clock(tmp_path, panes, hours=9):

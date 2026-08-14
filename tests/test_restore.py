@@ -1,15 +1,15 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
+from fakes import FakeHerdrClient
 
 from attic.cli import main
 from attic.herdr import HerdrError
 from attic.restore import restore
 from attic.store import AtticHome
-from fakes import FakeHerdrClient
 
-NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=UTC)
 
 
 def manifest(cwd: str) -> dict:

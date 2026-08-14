@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from typing import Callable
+from collections.abc import Callable
 
 from .models import Pane, parse_pane_list
 
@@ -14,7 +14,8 @@ class HerdrError(Exception):
 
 
 def _subprocess_runner(argv: list[str]) -> str:
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    proc = subprocess.run(  # noqa: S603 — argv is built internally, never shell-interpolated
+        argv, capture_output=True, text=True, timeout=30, check=False)
     if proc.returncode != 0:
         raise OSError(f"{' '.join(argv)} exited {proc.returncode}: {proc.stderr.strip()}")
     return proc.stdout

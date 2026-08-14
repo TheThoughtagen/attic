@@ -8,8 +8,9 @@ so a young session's UUID resolves to nothing.
 
 from pathlib import Path
 
-from attic.resumable import project_dir, resume_blocker, session_path
 from test_policy import mkpane
+
+from attic.resumable import project_dir, resume_blocker, session_path
 
 
 def make_transcript(root: Path, cwd: str, uuid: str) -> Path:

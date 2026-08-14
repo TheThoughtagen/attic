@@ -1,12 +1,12 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from test_policy import mkpane
 
 from attic.exempt import resolve_terminal_id, set_pinned, set_snooze
 from attic.store import AtticHome, PaneState
-from test_policy import mkpane
 
-NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
 
 
 def test_resolves_a_pane_id_to_its_terminal_id():

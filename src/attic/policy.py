@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .models import Pane
 from .store import Config, PaneState
@@ -45,11 +45,11 @@ def iso(dt: datetime) -> str:
     """
     if dt.tzinfo is None:
         raise ValueError("iso() requires a timezone-aware datetime")
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return datetime.fromisoformat(ts)
 
 
 def update_state(

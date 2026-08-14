@@ -1,16 +1,17 @@
 import json
 import os
 import stat
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import mock
+
+from fakes import FakeHerdrClient
+from test_policy import mkpane
 
 from attic.archive import Archiver, make_archive_id, slugify
 from attic.policy import Archive
 from attic.store import AtticHome
-from fakes import FakeHerdrClient
-from test_policy import mkpane
 
-NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=UTC)
 IDLE_SINCE = NOW - timedelta(hours=5)
 
 

@@ -52,6 +52,32 @@ packages = ["src/attic"]
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
+[tool.ruff]
+# Pinned explicitly so a contributor's machine, this repo, and CI all lint the
+# same code the same way. Without it ruff falls back to ambient discovery and
+# reports a different set of errors locally than in CI.
+target-version = "py311"
+line-length = 96
+
+[tool.ruff.lint]
+select = [
+    "E4", "E7", "E9", "F",  # pyflakes + the pycodestyle rules ruff enables by default
+    "I",                     # import sorting
+    "UP",                    # pyupgrade — this project targets 3.11+
+    "B",                     # bugbear
+    "DTZ",                   # naive datetimes: attic's whole policy is time-based
+    "BLE",                   # blind excepts
+    "S",                     # bandit
+    "RUF",
+    "FURB",
+    "PLW",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is the point; "/tmp/repo" values are fake cwd STRINGS in fixtures, never
+# touched on disk; the subprocess call is the daemon-purity check running python -c.
+"tests/*" = ["S101", "S108", "S603", "PLW1510", "BLE001"]
+
 [tool.pytest.ini_options]
 markers = ["integration: requires a live herdr server (deselect with -m 'not integration')"]
 addopts = "-m 'not integration'"

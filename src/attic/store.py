@@ -41,7 +41,7 @@ class AtticHome:
         self.legacy_dir = self.root / "legacy"
 
     @classmethod
-    def default(cls) -> "AtticHome":
+    def default(cls) -> AtticHome:
         env = os.environ.get("ATTIC_HOME")
         return cls(Path(env) if env else Path.home() / ".attic")
 
@@ -92,7 +92,7 @@ class AtticHome:
                 # outside run_tick's `except HerdrError` and killing every future
                 # tick. Dropping the entry only restarts that pane's idle clock.
                 try:
-                    parsed = datetime.fromisoformat(first_idle_at.replace("Z", "+00:00"))
+                    parsed = datetime.fromisoformat(first_idle_at)
                 except ValueError:
                     continue
                 if parsed.tzinfo is None:
@@ -106,7 +106,7 @@ class AtticHome:
                 if not isinstance(snooze_until, str):
                     continue
                 try:
-                    parsed = datetime.fromisoformat(snooze_until.replace("Z", "+00:00"))
+                    parsed = datetime.fromisoformat(snooze_until)
                 except ValueError:
                     continue
                 if parsed.tzinfo is None:

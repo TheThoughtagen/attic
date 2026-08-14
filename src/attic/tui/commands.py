@@ -17,8 +17,8 @@ from ..duration import parse_duration
 from ..evaluate import archive_and_close
 from ..exempt import resolve_terminal_id, set_pinned, set_snooze
 from ..policy import Archive, iso
-from ..resumable import resume_blocker
 from ..restore import restore
+from ..resumable import resume_blocker
 from ..store import AtticHome
 
 FLEET_COMMANDS = {"pin", "unpin", "snooze", "unsnooze", "archive"}

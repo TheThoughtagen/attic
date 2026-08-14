@@ -8,6 +8,19 @@ on:
   workflow_call:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Lint with ruff
+        # The rule set is pinned in pyproject.toml, so this reports exactly what
+        # a contributor sees locally. Without that, ruff discovers config
+        # ambiently and CI and the developer lint different rules.
+        run: uv run --with ruff ruff check src/ tests/
+
   test:
     runs-on: ubuntu-latest
     strategy:
