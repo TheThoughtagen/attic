@@ -101,3 +101,20 @@ def test_archive_via_the_tui_leaves_an_index_entry(tmp_path):
     entry = json.loads(c.home.index_path.read_text().strip())
     assert entry["pane_id"] == "w4:p2"
     assert entry["close_failed"] is False
+
+
+def test_surplus_arguments_are_rejected_not_ignored(tmp_path):
+    """`:archive typo` must not archive. Accepting stray words would mean the
+    command that runs is not the command that was typed — the same class of
+    defect as a refresh retargeting a command onto another pane."""
+    for text in (":archive typo", ":pin now", ":unpin x", ":restore abc def"):
+        with pytest.raises(ValueError, match="argument"):
+            parse_command(text)
+
+
+def test_snooze_still_requires_exactly_one_duration(tmp_path):
+    verb, args = parse_command(":snooze 4h")
+    assert (verb, args) == ("snooze", ["4h"])
+    for bad in (":snooze", ":snooze 4h 5h"):
+        with pytest.raises(ValueError, match="argument"):
+            parse_command(bad)

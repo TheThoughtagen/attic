@@ -54,7 +54,7 @@ raise it before Task 1.
 | `src/attic/cli.py` | `tick`, `reap --dry-run`, `list`, `show`, `restore`, `prune` |
 | `tests/fixtures/pane_list_sample.json` | Real captured herdr output |
 | `tests/fakes.py` | `FakeHerdrClient` with programmable failures |
-| `launchd/com.you.attic.plist` | 5-minute timer |
+| `launchd/com.attic.plist` | 5-minute timer |
 
 ---
 
@@ -2777,7 +2777,7 @@ Do not enable the timer and walk away. The dry-run soak is how you verify the po
 against your real workload before it has authority to close anything.
 
 **Files:**
-- Create: `launchd/com.you.attic.plist`, `README.md`, `install.sh`
+- Create: `launchd/com.attic.plist`, `README.md`, `install.sh`
 
 **Interfaces:**
 - Consumes: the `attic` entry point (Task 7)
@@ -2785,7 +2785,7 @@ against your real workload before it has authority to close anything.
 
 - [ ] **Step 1: Write the LaunchAgent**
 
-Create `launchd/com.you.attic.plist`. Note `RunAtLoad` is false: the first run should
+Create `launchd/com.attic.plist`. Note `RunAtLoad` is false: the first run should
 be a deliberate manual one.
 
 ```xml
@@ -2795,7 +2795,7 @@ be a deliberate manual one.
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.you.attic</string>
+    <string>com.attic</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Users/you/.local/bin/uv</string>
@@ -2833,9 +2833,9 @@ Create `install.sh`:
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLIST="$HOME/Library/LaunchAgents/com.you.attic.plist"
+PLIST="$HOME/Library/LaunchAgents/com.attic.plist"
 mkdir -p "$HOME/.attic/logs" "$HOME/Library/LaunchAgents"
-cp launchd/com.you.attic.plist "$PLIST"
+cp launchd/com.attic.plist "$PLIST"
 
 # Start paused. Reaping is enabled only after the soak in the README.
 touch "$HOME/.attic/PAUSE"
@@ -2953,7 +2953,7 @@ the right reasons.
 - [ ] **Step 5: Confirm launchd is scheduled**
 
 Run: `launchctl list | grep attic`
-Expected: a line containing `com.you.attic`
+Expected: a line containing `com.attic`
 
 Then, after five minutes: `ls ~/.attic/inventory/` should contain today's `.jsonl`.
 

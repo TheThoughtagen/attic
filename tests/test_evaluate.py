@@ -83,5 +83,34 @@ def test_run_tick_and_evaluate_produce_identical_verdicts(tmp_path):
     ticked = run_tick(home_b, FakeHerdrClient(panes=[pane]), NOW, dry_run=True,
                       projects_root=root)
 
-    assert [type(a).__name__ for a in direct.actions] == \
-           [type(a).__name__ for a in ticked.actions]
+    # Compare the whole verdict, not just its type: matching type names would
+    # still pass if the two paths chose different panes, or skipped the same
+    # pane for different reasons — which is exactly the drift this guards.
+    def identity(actions):
+        return [(type(a).__name__, a.pane.pane_id, getattr(a, "reason", None))
+                for a in actions]
+
+    assert identity(direct.actions) == identity(ticked.actions)
+
+
+def test_the_tick_executes_under_the_config_it_decided_with(tmp_path):
+    """One snapshot per tick. Re-reading the config after deciding lets a policy
+    edit land mid-tick, so the daemon could act on a pane under a policy the
+    user had just changed."""
+    from attic.cli import run_tick
+
+    pane = mkpane("w4:p2")
+    home = home_with_clock(tmp_path, [pane])
+
+    reads = []
+    real = home.load_config
+
+    def counting_load_config():
+        cfg = real()
+        reads.append(cfg)
+        return cfg
+
+    home.load_config = counting_load_config
+    run_tick(home, FakeHerdrClient(panes=[pane]), NOW, dry_run=True,
+             projects_root=tmp_path / "projects")
+    assert len(reads) == 1, f"config read {len(reads)}x in one tick; a policy edit between reads would split the tick"

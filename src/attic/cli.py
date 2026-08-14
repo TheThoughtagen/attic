@@ -57,7 +57,7 @@ def run_tick(
         log.error("herdr unavailable, skipping tick: %s", exc)
         return TickResult(reason=f"herdr unavailable: {exc}")
     panes, labels, actions = result.panes, result.labels, result.actions
-    config = home.load_config()
+    config = result.config  # the snapshot the decisions were made under
 
     for path in prune_inventory(home, now, config.inventory_retention_days):
         log.info("pruned inventory %s", path.name)

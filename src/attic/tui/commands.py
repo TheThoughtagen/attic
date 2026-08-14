@@ -25,6 +25,10 @@ FLEET_COMMANDS = {"pin", "unpin", "snooze", "unsnooze", "archive"}
 ATTIC_COMMANDS = {"restore"}
 KNOWN = FLEET_COMMANDS | ATTIC_COMMANDS | {"q", "quit", "help"}
 
+#: How many arguments each command takes. Only `:snooze` takes one (a duration);
+#: everything else acts on the selected row and takes none.
+ARITY = {verb: (1 if verb == "snooze" else 0) for verb in KNOWN}
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -49,6 +53,14 @@ def parse_command(text: str) -> tuple[str, list[str]]:
     verb, args = parts[0], parts[1:]
     if verb not in KNOWN:
         raise ValueError(f"unknown command {verb!r}")
+    expected = ARITY[verb]
+    if len(args) != expected:
+        # Silently ignoring surplus arguments would let `:archive typo` close a
+        # session, which defeats the point of requiring a typed command for
+        # destructive actions: what runs must be what was written.
+        raise ValueError(
+            f"{verb} takes {expected} argument{'' if expected == 1 else 's'}, got {len(args)}"
+        )
     return verb, args
 
 

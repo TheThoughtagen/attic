@@ -23,7 +23,7 @@ from .herdr import HerdrError
 from .models import Pane
 from .policy import Action, Archive, Skip, decide, iso, update_state
 from .resumable import resume_blocker
-from .store import AtticHome, PaneState
+from .store import AtticHome, Config, PaneState
 
 log = logging.getLogger("attic")
 
@@ -34,6 +34,13 @@ class Evaluation:
     state: dict[str, PaneState]
     actions: list[Action]
     labels: dict[str, str]
+    config: Config
+    """The snapshot the decisions were made under.
+
+    Callers must use this rather than re-reading the config, or a tick can
+    decide under one policy and execute under another — archiving a pane the
+    user had just pinned or exempted mid-tick.
+    """
 
 
 def gate_on_resumability(
@@ -72,7 +79,8 @@ def evaluate(
     config = home.load_config()
     state = update_state(panes, home.load_state(), now)
     actions = gate_on_resumability(decide(panes, state, now, config), projects_root)
-    return Evaluation(panes=panes, state=state, actions=actions, labels=labels)
+    return Evaluation(panes=panes, state=state, actions=actions, labels=labels,
+                      config=config)
 
 
 def archive_and_close(home: AtticHome, client, action: Archive, label: str,

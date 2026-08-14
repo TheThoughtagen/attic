@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from attic.evaluate import Evaluation
 from attic.policy import Archive, Skip
 from attic.rows import activity_rows, attic_rows, fleet_rows, humanize
-from attic.store import AtticHome, PaneState
+from attic.store import AtticHome, Config, PaneState
 from test_policy import mkpane
 
 NOW = datetime(2026, 8, 13, 15, 47, 0, tzinfo=timezone.utc)
@@ -21,7 +21,7 @@ def test_humanize_reads_naturally():
 def test_fleet_rows_carry_the_verdict_and_reason():
     pane = mkpane("w4:p2")
     ev = Evaluation(panes=[pane], state={}, labels={"w1": "wh dev"},
-                    actions=[Skip(pane, "pinned")])
+                    actions=[Skip(pane, "pinned")], config=Config())
     row = fleet_rows(ev, NOW)[0]
     assert row.pane_id == "w4:p2"
     assert row.workspace == "wh dev"
@@ -34,7 +34,7 @@ def test_fleet_rows_show_idle_duration_from_state():
     pane = mkpane("w4:p2")
     state = {pane.terminal_id: PaneState("2026-08-13T11:35:00Z", 1)}
     ev = Evaluation(panes=[pane], state=state, labels={},
-                    actions=[Skip(pane, "not idle long enough")])
+                    actions=[Skip(pane, "not idle long enough")], config=Config())
     assert fleet_rows(ev, NOW)[0].idle_for == "4h 12m"
 
 
@@ -49,7 +49,7 @@ def test_fleet_rows_sort_archives_first_then_by_idle_time():
     }
     ev = Evaluation(panes=[a, b, c], state=state, labels={},
                     actions=[Skip(a, "not idle long enough"), Archive(b, NOW),
-                             Skip(c, "not idle long enough")])
+                             Skip(c, "not idle long enough")], config=Config())
     assert [r.pane_id for r in fleet_rows(ev, NOW)] == ["w1:p2", "w1:p3", "w1:p1"]
 
 
